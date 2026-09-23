@@ -60,3 +60,12 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Local build output
+DerivedData/
+*.xcuserstate
+.DS_Store
+
+# Test videos are kept locally and not published
+KineticTests/Fixtures/*.mp4
+KineticTests/Fixtures/*.mov

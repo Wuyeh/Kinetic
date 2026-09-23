@@ -1,0 +1,6 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #1f6f8b; }
+.orb { position: absolute; left: 50%; top: 50%; width: 30vmin; height: 30vmin; margin: -15vmin 0 0 -15vmin;
+       border-radius: 50%; background: #f2f7f5; animation: drift 6s ease-in-out infinite alternate; }
+.caption { position: absolute; bottom: 8vh; width: 100%; text-align: center; color: #f2f7f5;
+           font: 500 2.4vmin -apple-system, "PingFang SC", sans-serif; letter-spacing: 0.1em; }
+@keyframes drift { from { transform: translateX(-20vw); } to { transform: translateX(20vw); } }
