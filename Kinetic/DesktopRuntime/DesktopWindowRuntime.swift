@@ -1,6 +1,6 @@
 import AppKit
 
-/// 仅管理一个主显示器桌面窗口的创建、对齐、显示与释放。
+/// Module 2：仅管理一个主显示器桌面窗口的创建、对齐、显示与释放。
 /// 不管理 Wallpaper 播放状态、导入、Video/Web Renderer 或系统壁纸文件。
 @MainActor
 final class DesktopWindowRuntime: NSObject {
@@ -13,6 +13,16 @@ final class DesktopWindowRuntime: NSObject {
     private let workspaceNotifications: NotificationCenter
     private var content: NSView?
     private var isObserving = false
+
+    /// 启动时只清理当前进程中同标识的残留桌面窗口，不触碰主窗口或其他 App。
+    /// 崩溃进程的窗口由 WindowServer 回收；这里处理本进程恢复 / 重建时的残留。
+    static func closeOrphanedWindows(in windows: [NSWindow], identifier: NSUserInterfaceItemIdentifier) {
+        for window in windows where window.identifier == identifier {
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+        }
+    }
 
     init(
         identifier: NSUserInterfaceItemIdentifier,

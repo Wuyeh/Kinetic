@@ -6,7 +6,15 @@
     <true/>
     <key>com.apple.security.files.user-selected.read-only</key>
     <true/>
+    <!-- 1.0 Module 28：记住用户链接的 Wallpaper Engine 文件夹（只读安全范围书签）。 -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- 1.0 Module 9：与 Steam 小助手交换 SteamCMD 下载内容的共享目录（SteamHelperConstants.sharedFolderRelativePath）。 -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/Library/Application Support/Kinetic Steam/</string>
+    </array>
 </dict>
 </plist>

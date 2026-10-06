@@ -1,7 +1,7 @@
 import XCTest
 @testable import Kinetic
 
-/// 纯状态规则测试，不创建窗口、Renderer 或媒体。
+/// Module 5：纯状态规则测试，不创建窗口、Renderer 或媒体。
 final class WallpaperRuntimeMachineTests: XCTestCase {
     private let a = UUID()
     private let b = UUID()

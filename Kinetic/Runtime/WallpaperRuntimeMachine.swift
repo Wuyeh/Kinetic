@@ -1,6 +1,6 @@
 import Foundation
 
-/// Runtime 的输入事件。只携带壁纸标识，不携带 Renderer 或 UI 对象。
+/// Module 5：Runtime 的输入事件。只携带壁纸标识，不携带 Renderer 或 UI 对象。
 enum WallpaperRuntimeEvent: Equatable, Sendable {
     /// 用户明确应用一张壁纸（双击、Hover「应用」、Onboarding 等最终都走这里）。
     case apply(Wallpaper.ID)
@@ -10,7 +10,7 @@ enum WallpaperRuntimeEvent: Equatable, Sendable {
     case activeFailed(Wallpaper.ID)
     case pause
     case resume
-    /// 系统条件（全屏、锁屏、休眠、低电量等）是否成立。
+    /// 系统条件（全屏、锁屏、休眠、低电量等）是否成立；监听属于 Module 18。
     case smartPauseChanged(Bool)
     case stop
     case reenable
@@ -23,6 +23,7 @@ enum WallpaperRuntimeEffect: Equatable, Sendable {
     /// 取消并释放候选 Renderer（被新的 Apply 取代、准备失败或 Stop）。
     case discardCandidate
     /// 候选首帧已就绪：先把候选内容放上桌面，再释放旧 Active Renderer。
+    /// Module 6 的 Crossfade 只替换这一步的呈现方式。
     case promoteCandidate
     /// 首次开始播放 Active Renderer。
     case playActive
@@ -35,7 +36,7 @@ enum WallpaperRuntimeEffect: Equatable, Sendable {
     case reportFailure(Wallpaper.ID)
 }
 
-/// 唯一的播放状态规则。纯值类型，不持有 Renderer、窗口或 UI，便于逐条测试。
+/// Module 5：唯一的播放状态规则。纯值类型，不持有 Renderer、窗口或 UI，便于逐条测试。
 /// 任何 Renderer 都不能自行决定 App 状态；它们只接收由这里推导出的动作。
 struct WallpaperRuntimeMachine: Equatable, Sendable {
     private(set) var activeWallpaperID: Wallpaper.ID?

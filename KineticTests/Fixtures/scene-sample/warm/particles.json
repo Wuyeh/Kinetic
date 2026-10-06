@@ -1,0 +1,1 @@
+{"material": "sprite-material.json", "maxcount": 128, "emitter": [{"name": "sphererandom", "rate": 12}], "initializer": [{"name": "lifetime", "value": 2}, {"name": "velocityrandom", "min": "-64 24 0", "max": "64 80 0"}, {"name": "sizerandom", "min": 3, "max": 7}], "operator": [{"name": "alphafade", "fadeintime": 0.2, "fadeouttime": 0.4}]}

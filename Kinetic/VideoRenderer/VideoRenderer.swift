@@ -23,7 +23,7 @@ enum VideoRendererError: LocalizedError {
     }
 }
 
-/// 一个实例只准备一份 Wallpaper。调用方先 await prepare，再注入桌面窗口。
+/// Module 3：一个实例只准备一份 Wallpaper。调用方先 await prepare，再注入桌面窗口。
 /// 不写入全局 PlaybackState，不决定 Apply、Smart Pause 或 Crossfade。
 @MainActor
 final class VideoRenderer {
@@ -58,7 +58,7 @@ final class VideoRenderer {
             try Task.checkCancellation()
             guard wallpaper.type == .video else { throw VideoRendererError.unsupportedWallpaper }
             let url = wallpaper.resourceURL
-            guard url.isFileURL, ["mp4", "mov"].contains(url.pathExtension.lowercased()) else {
+            guard url.isFileURL, VideoFormats.hasVideoExtension(url) else {
                 throw VideoRendererError.unsupportedResource
             }
             guard FileManager.default.isReadableFile(atPath: url.path) else {

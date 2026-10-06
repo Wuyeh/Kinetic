@@ -1,0 +1,8 @@
+{
+  "passes": [
+    {
+      "blending": "disabled",
+      "shader": "kinetic_graph_pulse"
+    }
+  ]
+}

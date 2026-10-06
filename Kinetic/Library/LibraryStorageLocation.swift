@@ -1,7 +1,7 @@
 import Foundation
 
-/// Kinetic 自己管理的资料库目录。
-/// App Sandbox 下位于容器的 Application Support/Kinetic；测试可注入独立目录。
+/// Module 7：Kinetic 自己管理的资料库目录。
+/// App Sandbox 下位于容器的 Application Support/Kinetic；测试与验收面板可注入独立目录。
 struct LibraryStorageLocation: Equatable, Sendable {
     let rootURL: URL
 
@@ -12,7 +12,7 @@ struct LibraryStorageLocation: Equatable, Sendable {
     /// 资料库 metadata 文件。
     var libraryFileURL: URL { rootURL.appendingPathComponent("library.json", isDirectory: false) }
 
-    /// 本地导入内容的管理目录。
+    /// 本地导入内容的管理目录（Module 8 使用）。
     var wallpapersDirectoryURL: URL { rootURL.appendingPathComponent("Wallpapers", isDirectory: true) }
 
     static func standard(fileManager: FileManager = .default) throws -> LibraryStorageLocation {

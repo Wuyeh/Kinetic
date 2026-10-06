@@ -2,12 +2,12 @@ import AppKit
 import XCTest
 @testable import Kinetic
 
-/// 仅在设置 KINETIC_DESKTOP_SOAK=1 时执行；正常单元测试不会等待 30 分钟或覆盖桌面。
+/// 显式运行专用 scheme 才执行，正常单元测试不会等待 30 分钟或覆盖桌面。
 final class DesktopWindowSoakTests: XCTestCase {
     @MainActor
     func testThirtyMinuteDesktopSession() async throws {
         guard ProcessInfo.processInfo.environment["KINETIC_DESKTOP_SOAK"] == "1" else {
-            throw XCTSkip("设置环境变量 KINETIC_DESKTOP_SOAK=1 后执行 30 分钟桌面稳定性测试。")
+            throw XCTSkip("使用 Kinetic-Module2 验收 scheme 显式执行 30 分钟桌面测试。")
         }
         executionTimeAllowance = 2100
         let identifier = AppDelegate.desktopWallpaperWindowIdentifier
@@ -24,7 +24,7 @@ final class DesktopWindowSoakTests: XCTestCase {
         let firstWindow = try XCTUnwrap(runtime.window)
         let firstNumber = firstWindow.windowNumber
         let started = ProcessInfo.processInfo.systemUptime
-        print("DESKTOP_SOAK_BEGIN \(Date().ISO8601Format()) window=\(firstNumber) requiredSeconds=1800")
+        print("MODULE2_SOAK_BEGIN \(Date().ISO8601Format()) window=\(firstNumber) requiredSeconds=1800")
         fflush(stdout)
 
         var sample = 0
@@ -48,14 +48,14 @@ final class DesktopWindowSoakTests: XCTestCase {
             sample += 1
             if sample % 6 == 0 {
                 let elapsed = Int(ProcessInfo.processInfo.systemUptime - started)
-                print("DESKTOP_SOAK_SAMPLE elapsed=\(elapsed) window=\(firstNumber) spaces=\(events.count) frame=\(window.frame) screens=\(NSScreen.screens.count)")
+                print("MODULE2_SOAK_SAMPLE elapsed=\(elapsed) window=\(firstNumber) spaces=\(events.count) frame=\(window.frame) screens=\(NSScreen.screens.count)")
                 fflush(stdout)
             }
         }
 
         // 真正的系统通知，不用单元测试伪造的通知来替代人工 Spaces 操作。
-        XCTAssertGreaterThanOrEqual(events.count, 4, "测试期间至少进行 4 次真实 Spaces/全屏空间切换。")
-        print("DESKTOP_SOAK_END \(Date().ISO8601Format()) elapsed=\(Int(ProcessInfo.processInfo.systemUptime - started)) spaces=\(events.count)")
+        XCTAssertGreaterThanOrEqual(events.count, 4, "验收期间至少进行 4 次真实 Spaces/全屏空间切换。")
+        print("MODULE2_SOAK_END \(Date().ISO8601Format()) elapsed=\(Int(ProcessInfo.processInfo.systemUptime - started)) spaces=\(events.count)")
         fflush(stdout)
     }
 }

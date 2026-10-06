@@ -1,14 +1,18 @@
 import AVFoundation
 import Foundation
 import ImageIO
+import KineticSceneRuntime
 import UniformTypeIdentifiers
 
 enum LocalImportError: LocalizedError, Equatable {
     case unsupportedItem
     case unreadable
     case missingWebEntry
+    case invalidScene(String)
     case containsSymbolicLinks
     case unplayableVideo
+    /// 受版权保护（DRM）的视频不能作为壁纸播放。
+    case protectedVideo
     case copyFailed(String)
     case libraryFailed(String)
 
@@ -17,8 +21,10 @@ enum LocalImportError: LocalizedError, Equatable {
         case .unsupportedItem: return NSLocalizedString("import.error.unsupported", comment: "")
         case .unreadable: return NSLocalizedString("import.error.unreadable", comment: "")
         case .missingWebEntry: return NSLocalizedString("import.error.webEntry", comment: "")
+        case .invalidScene(let reason): return reason
         case .containsSymbolicLinks: return NSLocalizedString("import.error.symlink", comment: "")
         case .unplayableVideo: return NSLocalizedString("import.error.video", comment: "")
+        case .protectedVideo: return NSLocalizedString("import.error.protected", comment: "")
         case .copyFailed(let reason):
             return String(format: NSLocalizedString("import.error.copy", comment: ""), reason)
         case .libraryFailed(let reason):
@@ -30,6 +36,7 @@ enum LocalImportError: LocalizedError, Equatable {
 enum LocalImportKind: Equatable, Sendable {
     case video
     case webFolder
+    case sceneFolder
 }
 
 struct LocalImportOutcome {
@@ -41,19 +48,22 @@ struct LocalImportOutcome {
     var wallpaper: Wallpaper? { try? result.get() }
 }
 
-/// 本地导入。
-/// 把本地 MP4 / MOV 或网页壁纸文件夹**复制**到 Kinetic 管理的 Library Storage，再加入资料库。
-/// 绝不移动、修改或删除用户的原始文件。网页壁纸照常入库，但暂不能播放。
-/// 不负责界面入口。
+/// Module 8 — Local Import。
+/// 把本地视频、网页或 Scene 项目文件夹**复制**到 Library Storage，再加入本地资料库。
+/// 绝不移动、修改或删除用户的原始文件；只入库，不应用、不改变任何显示器的壁纸、不播放声音。
+/// 入口：文件面板（Floating Toolbar ＋、Menu Bar）与 Finder 拖入主窗口（1.0 Module 8，`FinderDropImport`）。
+/// 不负责 Steam 下载入库（Module 9）。
 @MainActor
 final class LocalImportService {
-    static let videoExtensions: Set<String> = ["mp4", "mov"]
+    static var videoExtensions: Set<String> { VideoFormats.fileExtensions }
     static let webEntryNames = ["index.html", "index.htm"]
     static let webPreviewNames = ["preview.jpg", "preview.jpeg", "preview.png", "preview.gif"]
     static let thumbnailFileName = "kinetic-preview.jpg"
 
     let library: WallpaperLibrary
     private(set) var isImporting = false
+    /// Module 28：成功入库后通知（只读）；App 用它为 Scene 获取缺少的创意工坊依赖项。不参与复制 / 校验。
+    var onImported: (@MainActor (Wallpaper) -> Void)?
 
     init(library: WallpaperLibrary) {
         self.library = library
@@ -62,36 +72,43 @@ final class LocalImportService {
     }
 
     /// 逐个导入；某一项失败不影响其余项目。结果顺序与输入一致。
-    func importItems(at urls: [URL]) async -> [LocalImportOutcome] {
+    /// 1.0 Module 7：导入的内容都进入本地资料库；`origin` 只记录来源历史（用户导入为 `.localImport`）。
+    func importItems(at urls: [URL], origin: AcquisitionOrigin = .localImport) async -> [LocalImportOutcome] {
         isImporting = true
         defer { isImporting = false }
         var outcomes: [LocalImportOutcome] = []
-        for url in urls { outcomes.append(await importItem(at: url)) }
+        for url in urls { outcomes.append(await importItem(at: url, origin: origin)) }
         return outcomes
     }
 
-    func importItem(at url: URL) async -> LocalImportOutcome {
+    func importItem(at url: URL, origin: AcquisitionOrigin = .localImport) async -> LocalImportOutcome {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let source = url.resolvingSymlinksInPath()
         let before = LocalImportFiles.fingerprint(of: source)
         let result: Result<Wallpaper, LocalImportError>
         do {
-            result = .success(try await performImport(of: source))
+            result = .success(try await performImport(of: source, origin: origin))
         } catch let error as LocalImportError {
             result = .failure(error)
+        } catch let error as SceneRuntimeError {
+            result = .failure(.invalidScene(error.localizedDescription))
         } catch {
             result = .failure(.copyFailed(error.localizedDescription))
         }
         let after = LocalImportFiles.fingerprint(of: source)
+        if case .success(let wallpaper) = result { onImported?(wallpaper) }
         return LocalImportOutcome(sourceURL: url, result: result, sourceUnchanged: before != nil && before == after)
     }
 
     // MARK: - 流程
 
-    private func performImport(of source: URL) async throws -> Wallpaper {
+    private func performImport(of source: URL, origin: AcquisitionOrigin) async throws -> Wallpaper {
         let kind = try Self.classify(source)
         if kind == .video { try await Self.validateVideo(at: source) }
+        // Inspect without playing, executing scripts, or touching the original.
+        let sceneMetadata: SceneImportMetadata? = kind == .sceneFolder
+            ? try await Task.detached(priority: .userInitiated) { try SceneImportMetadata.inspect(root: source) }.value : nil
 
         let id = UUID()
         let directory = library.storage.wallpapersDirectoryURL
@@ -110,6 +127,14 @@ final class LocalImportService {
                 }
             case .webFolder:
                 thumbnailPath = Self.webPreviewName(in: staged.contentURL).map { "\(staged.contentName)/\($0)" }
+            case .sceneFolder:
+                // Revalidate the copy: a source changing during copy cannot enter the library.
+                let copied = try SceneImportMetadata.inspect(root: staged.contentURL)
+                guard copied.entry == sceneMetadata?.entry else { throw LocalImportError.invalidScene("Scene 入口在复制期间发生变化。") }
+                let preview = copied.preview ?? Self.webPreviewName(in: staged.contentURL)
+                if let preview, FileManager.default.isReadableFile(atPath: staged.contentURL.appendingPathComponent(preview).path) {
+                    thumbnailPath = "\(staged.contentName)/\(preview)"
+                }
             }
             final = try LocalImportFiles.finalize(staged, id: id, in: directory)
         } catch {
@@ -117,13 +142,16 @@ final class LocalImportService {
             throw error
         }
 
+        let now = Date()
         let wallpaper = Wallpaper(
             id: id,
-            name: Self.displayName(for: source, kind: kind),
-            type: kind == .video ? .video : .web,
-            source: .local,
-            resourceURL: final.appendingPathComponent(staged.contentName, isDirectory: kind == .webFolder),
-            thumbnailURL: thumbnailPath.map { final.appendingPathComponent($0) }
+            name: sceneMetadata?.title ?? Self.displayName(for: source, kind: kind),
+            type: kind == .video ? .video : (kind == .sceneFolder ? .scene : .web),
+            acquisitionOrigin: origin,
+            resourceURL: final.appendingPathComponent(staged.contentName, isDirectory: kind != .video),
+            thumbnailURL: thumbnailPath.map { final.appendingPathComponent($0) },
+            importedAt: now,
+            updatedAt: now
         )
         do {
             try library.add(wallpaper)
@@ -137,13 +165,22 @@ final class LocalImportService {
 
     // MARK: - 识别与校验
 
-    /// 识别可导入的项目：MP4 / MOV 文件，或根目录含 index.html 的网页壁纸文件夹。
+    /// 识别视频、网页入口或安全 Scene manifest；不执行渲染或脚本。
     static func classify(_ url: URL) throws -> LocalImportKind {
         guard url.isFileURL else { throw LocalImportError.unsupportedItem }
         guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
             throw LocalImportError.unreadable
         }
         if values.isDirectory == true {
+            if FileManager.default.fileExists(atPath: url.appendingPathComponent("project.json").path) {
+                // A scene manifest wins over an unrelated index.html in the same folder.
+                if (try? SceneImportMetadata.identifiesScene(root: url)) == true {
+                    if containsSymbolicLinks(url) { throw LocalImportError.containsSymbolicLinks }
+                    do { _ = try SceneImportMetadata.inspect(root: url) }
+                    catch { throw LocalImportError.invalidScene(error.localizedDescription) }
+                    return .sceneFolder
+                }
+            }
             guard webEntryName(in: url) != nil else { throw LocalImportError.missingWebEntry }
             // 符号链接可能指向文件夹以外的位置，违背网页壁纸不得读取任意文件的安全边界。
             if containsSymbolicLinks(url) { throw LocalImportError.containsSymbolicLinks }
@@ -182,9 +219,10 @@ final class LocalImportService {
         return false
     }
 
-    /// 与 VideoRenderer 的准备条件一致：可播放、时长有效、有视频轨道。
+    /// 与 VideoRenderer 的准备条件一致：可播放、时长有效、有视频轨道；受版权保护的内容拒绝。
     static func validateVideo(at url: URL) async throws {
         let asset = AVURLAsset(url: url)
+        let isProtected: Bool
         do {
             let playable = try await asset.load(.isPlayable)
             let duration = try await asset.load(.duration)
@@ -192,9 +230,11 @@ final class LocalImportService {
             guard playable, duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0, !tracks.isEmpty else {
                 throw LocalImportError.unplayableVideo
             }
+            isProtected = try await asset.load(.hasProtectedContent)
         } catch {
             throw LocalImportError.unplayableVideo
         }
+        if isProtected { throw LocalImportError.protectedVideo }
     }
 
     static func displayName(for source: URL, kind: LocalImportKind) -> String {
@@ -203,24 +243,15 @@ final class LocalImportService {
         return trimmed.isEmpty ? NSLocalizedString("import.untitled", comment: "") : trimmed
     }
 
-    /// 预览图取 min(1 秒, 时长 10%) 处的一帧，避免片头黑场；失败不影响导入。
+    /// 规格 8：视频没有 Poster 时，从合适的时间点抽取代表性画面，避免黑色首帧（`PosterFrameSelector`）。
+    /// 失败不影响导入。
     static func writeVideoThumbnail(from video: URL, to destination: URL) async -> Bool {
-        let asset = AVURLAsset(url: video)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 960, height: 960)
-        do {
-            let duration = try await asset.load(.duration)
-            let seconds = duration.isNumeric ? min(1.0, max(0, duration.seconds * 0.1)) : 0
-            let (image, _) = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
-            guard let target = CGImageDestinationCreateWithURL(destination as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-                return false
-            }
-            CGImageDestinationAddImage(target, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
-            return CGImageDestinationFinalize(target)
-        } catch {
+        guard let image = await PosterFrameSelector.representativeFrame(of: video),
+              let target = CGImageDestinationCreateWithURL(destination as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
             return false
         }
+        CGImageDestinationAddImage(target, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        return CGImageDestinationFinalize(target)
     }
 }
 

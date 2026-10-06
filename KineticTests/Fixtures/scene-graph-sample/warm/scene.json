@@ -1,0 +1,27 @@
+{
+  "camera": {
+    "center": "0 0 0"
+  },
+  "general": {
+    "clearcolor": "0.03 0.05 0.08",
+    "orthogonalprojection": {
+      "height": 540,
+      "width": 960
+    }
+  },
+  "objects": [
+    {
+      "effects": [
+        {
+          "file": "effects/probe/effect.json",
+          "id": 2
+        }
+      ],
+      "id": 1,
+      "image": "models/layer.json",
+      "name": "FBO pulse",
+      "origin": "480 270 0",
+      "size": "960 540 0"
+    }
+  ]
+}

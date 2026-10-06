@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import Kinetic
 
-/// 卡片外观状态、预览区域几何与 Metadata。
+/// Module 11：卡片外观状态、预览区域几何与 Metadata。
 final class WallpaperCardTests: XCTestCase {
     private func wallpaper(_ type: WallpaperType = .video, _ source: WallpaperSource = .local,
                            thumbnail: URL? = nil) -> Wallpaper {
@@ -63,11 +63,46 @@ final class WallpaperCardTests: XCTestCase {
         XCTAssertFalse(unsupported.canApply)
     }
 
+    func testLocalApplyRequiresAnExplicitTargetOnlyForMultipleDisplays() {
+        let first = DisplayID("built-in")
+        let second = DisplayID("external")
+        let stopped = WallpaperRuntimeState()
+        XCTAssertEqual(LocalCardApplyRoute.resolve(RuntimeSummary()), .unavailable)
+        let one = RuntimeSummary(displays: [DisplayRuntimeState(displayID: first, displayName: "Built-in", runtime: stopped)])
+        XCTAssertEqual(LocalCardApplyRoute.resolve(one), .direct(first))
+        let two = RuntimeSummary(displays: one.displays +
+            [DisplayRuntimeState(displayID: second, displayName: "External", runtime: stopped)])
+        XCTAssertEqual(LocalCardApplyRoute.resolve(two), .chooseDisplay)
+    }
+
+    func testStableSelectionAndMarqueeUseWallpaperIDsRatherThanGridPositions() {
+        let a = UUID(), b = UUID(), c = UUID()
+        var selection = StableCardSelection<UUID>()
+        selection.selectOnly(a)
+        selection.toggle(b)
+        XCTAssertEqual(selection.ids, [a, b])
+        selection.toggle(a)
+        XCTAssertEqual(selection.ids, [b])
+
+        let frames: [UUID: CGRect] = [
+            a: CGRect(x: 20, y: 20, width: 100, height: 100),
+            b: CGRect(x: 140, y: 20, width: 100, height: 100),
+            c: CGRect(x: 20, y: 150, width: 100, height: 100)
+        ]
+        // 反向拖拽，只与 b 相交；列位置改变也不改变选中对象的身份。
+        selection.replace(with: CardMarqueeSelection.intersectingIDs(
+            from: CGPoint(x: 210, y: 90), to: CGPoint(x: 130, y: 10), frames: frames
+        ))
+        XCTAssertEqual(selection.ids, [b])
+        selection.retain([a, c])
+        XCTAssertTrue(selection.ids.isEmpty, "Filtered/deleted IDs must not remain selected")
+    }
+
     @MainActor
     func testPlayableMatchesTheRuntimeAvailability() {
         XCTAssertTrue(WallpaperCardVisualState.isPlayable(wallpaper(.video)))
-        XCTAssertFalse(WallpaperCardVisualState.isPlayable(wallpaper(.web)))
-        XCTAssertFalse(WallpaperCardVisualState.isPlayable(wallpaper(.scene, .steam)))
+        XCTAssertTrue(WallpaperCardVisualState.isPlayable(wallpaper(.web)))
+        XCTAssertTrue(WallpaperCardVisualState.isPlayable(wallpaper(.scene, .steam)))
     }
 
     @MainActor
@@ -77,7 +112,7 @@ final class WallpaperCardTests: XCTestCase {
         XCTAssertEqual(WallpaperCardCaption.metadataText(for: wallpaper(.scene, .steam)), "场景 · Steam")
     }
 
-    /// 预览区域的尺寸只由宽度决定：任意比例的缩略图或没有缩略图，都保持 16:10、同一高度。
+    /// 预览区域的尺寸只由宽度决定：任意比例的缩略图或没有缩略图，都是同样大小的正方形（1.0 Module 11）。
     @MainActor
     func testPreviewAreaGeometryDoesNotDependOnItsContent() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -94,7 +129,7 @@ final class WallpaperCardTests: XCTestCase {
             }
             // 无缩略图、竖图、宽图：预览区域尺寸完全相同。
             XCTAssertEqual(Set(sizes.map { "\($0.width)x\($0.height)" }).count, 1, "\(sizes)")
-            // 16:10；高度允许布局对齐到像素网格带来的 1pt 以内误差。
+            // 1:1；高度允许布局对齐到像素网格带来的 1pt 以内误差。
             XCTAssertEqual(sizes[0].width, width, accuracy: 0.5)
             XCTAssertEqual(sizes[0].height, width / MainWindowDesignTokens.Grid.previewAspectRatio, accuracy: 1)
         }

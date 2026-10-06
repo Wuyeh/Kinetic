@@ -1,20 +1,19 @@
 import AppKit
 import WebKit
 
-/// 网页壁纸的安全边界。预览只使用这里的配置，不另建更宽松的版本；
-/// 桌面 Web Renderer 接入时应复用同一套规则。
+/// 网页壁纸的安全边界（Master Spec 32–35）。桌面 Web Renderer 与悬停预览共用配置及网络规则。
 enum WebWallpaperPolicy {
     /// 允许：本地 HTML/CSS/JS/Canvas/WebGL、HTTPS 资源、Fetch/XHR、WebSocket。
     /// 固定禁止：摄像头、麦克风、定位、任意文件读取、原生命令、启动其他 App、下载、弹出新窗口。
     @MainActor
-    static func makeConfiguration(userScripts: [WKUserScript]) -> WKWebViewConfiguration {
+    static func makeConfiguration(userScripts: [WKUserScript], allowsAutomaticAudioPlayback: Bool = false) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = sharedDataStore
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.preferences.isElementFullscreenEnabled = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         // 有声媒体必须由用户手势启动；预览区域不接收任何点击，因此网页无法自行发声。
-        configuration.mediaTypesRequiringUserActionForPlayback = .audio
+        configuration.mediaTypesRequiringUserActionForPlayback = allowsAutomaticAudioPlayback ? [] : .audio
         configuration.allowsAirPlayForMediaPlayback = false
         configuration.upgradeKnownHostsToHTTPS = true
         // 不注册任何 script message handler：网页没有通往原生代码的桥。
@@ -27,6 +26,38 @@ enum WebWallpaperPolicy {
     /// 不持久化 Cookie / 本地存储。
     @MainActor
     static let sharedDataStore = WKWebsiteDataStore.nonPersistent()
+
+    /// WebKit 的资源拦截器覆盖 HTML 标签与 CSS 引发的请求；脚本侧另行拒绝不安全的 Fetch/XHR/WS。
+    /// 规则编译失败时桌面 Renderer 不加载网页，避免失去网络边界后降级运行。
+    @MainActor
+    static func installNetworkRules(on configuration: WKWebViewConfiguration, allowsNetwork: Bool = true) async throws {
+        let rules = try await (allowsNetwork ? secureNetworkRules : offlineNetworkRules).value
+        configuration.userContentController.add(rules)
+    }
+
+    @MainActor
+    private static let secureNetworkRules = Task<WKContentRuleList, Error> {
+        let source = """
+        [{"trigger":{"url-filter":"^http://"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^ws://"},"action":{"type":"block"}}]
+        """
+        guard let rules = try await WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "Kinetic.Web.SecureNetwork.v1", encodedContentRuleList: source
+        ) else { throw WebRendererError.networkPolicyUnavailable }
+        return rules
+    }
+
+    @MainActor
+    private static let offlineNetworkRules = Task<WKContentRuleList, Error> {
+        let source = """
+        [{"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^wss?://"},"action":{"type":"block"}}]
+        """
+        guard let rules = try await WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "Kinetic.Web.Offline.v1", encodedContentRuleList: source
+        ) else { throw WebRendererError.networkPolicyUnavailable }
+        return rules
+    }
 
     /// 网页可以加载哪些地址。主框架只能停留在壁纸自己的文件夹里；
     /// 子框架额外允许 HTTPS 与内存内容。其余协议（http、自定义 App 协议、mailto 等）一律拒绝。
@@ -60,6 +91,7 @@ final class WebPreviewSession: NSObject, LivePreviewSession, WKNavigationDelegat
     private let content = LivePreviewContentView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
     private(set) var webView: WKWebView?
     private var revealTask: Task<Void, Never>?
+    private var loadTask: Task<Void, Never>?
     private var isInvalidated = false
 
     private(set) var state: PreviewContentState = .preparing {
@@ -88,13 +120,26 @@ final class WebPreviewSession: NSObject, LivePreviewSession, WKNavigationDelegat
     }
 
     func start() {
-        guard !isInvalidated, webView == nil else { return }
+        guard !isInvalidated, webView == nil, loadTask == nil else { return }
         let configuration = WebWallpaperPolicy.makeConfiguration(userScripts: [
+            WKUserScript(source: WebRenderer.networkScript(allowsNetwork: true), injectionTime: .atDocumentStart, forMainFrameOnly: false),
             WKUserScript(source: Self.muteScript, injectionTime: .atDocumentStart, forMainFrameOnly: false),
             WKUserScript(source: Self.frameRateScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         ])
-        let web = WKWebView(frame: content.bounds, configuration: configuration)
-        web.autoresizingMask = [.width, .height]
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.loadTask = nil }
+            do { try await WebWallpaperPolicy.installNetworkRules(on: configuration) }
+            catch { self.fail(); return }
+            guard !Task.isCancelled, !self.isInvalidated else { return }
+            self.load(using: configuration)
+        }
+    }
+
+    private func load(using configuration: WKWebViewConfiguration) {
+        // 1.0 Module 11：网页按主显示器的比例渲染，完整放进正方形 Poster 中央，四周露出 Poster 的模糊背景。
+        content.contentAspectRatio = Self.desktopAspectRatio
+        let web = WKWebView(frame: content.contentRect, configuration: configuration)
         web.allowsBackForwardNavigationGestures = false
         web.allowsMagnification = false
         web.allowsLinkPreview = false
@@ -113,6 +158,8 @@ final class WebPreviewSession: NSObject, LivePreviewSession, WKNavigationDelegat
     func invalidate() {
         guard !isInvalidated else { return }
         isInvalidated = true
+        loadTask?.cancel()
+        loadTask = nil
         onStateChange = nil
         revealTask?.cancel()
         revealTask = nil
@@ -197,6 +244,13 @@ final class WebPreviewSession: NSObject, LivePreviewSession, WKNavigationDelegat
         .deny
     }
 
+    @available(macOS 27.0, *)
+    func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo,
+                 decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {
+        decisionHandler(.deny)
+    }
+
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
                  initiatedByFrame frame: WKFrameInfo) async -> [URL]? {
         nil
@@ -250,6 +304,12 @@ final class WebPreviewSession: NSObject, LivePreviewSession, WKNavigationDelegat
     """
 
     /// 小窗口预览不需要高帧率：requestAnimationFrame 回调约限制为 30 FPS。
+    /// 预览网页的渲染比例：主显示器的宽高比（没有显示器信息时用 16:10）。
+    static var desktopAspectRatio: CGFloat {
+        guard let size = NSScreen.main?.frame.size, size.width > 0, size.height > 0 else { return 16.0 / 10.0 }
+        return size.width / size.height
+    }
+
     static let frameRateScript = """
     (() => {
       'use strict';

@@ -5,7 +5,7 @@ import Darwin
 import SwiftUI
 import WebKit
 
-/// 仅 Debug：统计悬停预览创建与释放的资源，供单元测试与压力测试使用。
+/// 仅 Debug：统计悬停预览创建与释放的资源，供单元测试与压力验收使用。
 /// 播放器与网页视图用弱引用登记，释放后自动从统计中消失，因此能直接发现泄漏。
 @MainActor
 final class LivePreviewDiagnostics {

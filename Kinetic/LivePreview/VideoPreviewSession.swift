@@ -30,7 +30,19 @@ final class LivePreviewContentView: NSView {
         layoutPlayerLayers()
     }
 
-    /// 视频图层跟随预览区域等比例缩放，不重建播放器。
+    /// 1.0 Module 11：网页预览按桌面比例渲染，再完整放进正方形 Poster 的中央（与视频的 `.resizeAspect` 一致）。
+    /// nil 表示子视图铺满。
+    var contentAspectRatio: CGFloat? {
+        didSet { if contentAspectRatio != oldValue { layoutPlayerLayers() } }
+    }
+
+    /// 内容子视图（网页）应占的区域。
+    var contentRect: CGRect {
+        guard let ratio = contentAspectRatio, ratio > 0 else { return bounds }
+        return PosterGeometry.foregroundRect(imageSize: CGSize(width: ratio, height: 1), in: bounds)
+    }
+
+    /// 视频图层与网页跟随预览区域等比例缩放，不重建播放器或网页。
     func layoutPlayerLayers() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -38,6 +50,10 @@ final class LivePreviewContentView: NSView {
             sublayer.frame = bounds
         }
         CATransaction.commit()
+        let target = contentRect
+        for subview in subviews where subview.frame != target {
+            subview.frame = target
+        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -81,7 +97,8 @@ final class VideoPreviewSession: LivePreviewSession {
         queue.preventsDisplaySleepDuringVideoPlayback = false
         queue.allowsExternalPlayback = false
         let looper = AVPlayerLooper(player: queue, templateItem: AVPlayerItem(asset: asset))
-        playerLayer.videoGravity = .resizeAspectFill
+        // 1.0 Module 11：正方形 Poster 中保持视频原比例、完整显示，四周露出 Poster 的模糊背景。
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.player = queue
         playerLayer.frame = content.bounds
         content.layer?.addSublayer(playerLayer)

@@ -1,0 +1,8 @@
+{
+  "passes": [
+    {
+      "blending": "normal",
+      "shader": "effects/waterwaves"
+    }
+  ]
+}

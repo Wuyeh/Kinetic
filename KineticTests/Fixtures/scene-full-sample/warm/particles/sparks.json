@@ -1,0 +1,42 @@
+{
+  "emitter": [
+    {
+      "distancemax": "420 220 0",
+      "distancemin": "0 0 0",
+      "name": "boxrandom",
+      "origin": "0 0 0",
+      "rate": 40
+    }
+  ],
+  "initializer": [
+    {
+      "max": 3,
+      "min": 1.5,
+      "name": "lifetimerandom"
+    },
+    {
+      "max": 20,
+      "min": 8,
+      "name": "sizerandom"
+    },
+    {
+      "max": "20 110 0",
+      "min": "-20 30 0",
+      "name": "velocityrandom"
+    }
+  ],
+  "material": "materials/spark.json",
+  "maxcount": 160,
+  "operator": [
+    {
+      "drag": 0,
+      "gravity": "0 0 0",
+      "name": "movement"
+    },
+    {
+      "fadeintime": 0.2,
+      "fadeouttime": 0.5,
+      "name": "alphafade"
+    }
+  ]
+}

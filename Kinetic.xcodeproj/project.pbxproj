@@ -6,13 +6,98 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A00000000000000000000112 /* WorkshopDependencyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000112 /* WorkshopDependencyStore.swift */; };
+		A000000000000000000000FC /* SceneRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000FC; };
+		A000000000000000000000FB /* KineticSceneRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000027 /* KineticSceneRuntime */; };
+		A000000000000000000000FA /* SceneRuntimeTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000FA; };
+		A000000000000000000000F9 /* SceneRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F9; };
+		A000000000000000000000F8 /* SettingsPerformanceTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F8; };
+		A000000000000000000000F7 /* PerformanceCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F7; };
+		A000000000000000000000F6 /* PerformancePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F6; };
+		A000000000000000000000F5 /* AppControlsTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F5; };
+		A000000000000000000000F4 /* MenuBarMultiDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F4; };
+		A000000000000000000000F3 /* SteamDisplayApplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F3; };
+		A000000000000000000000F2 /* SteamDisplayDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F2; };
+		A000000000000000000000F1 /* SteamDisplayApplyCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F1; };
+		A000000000000000000000F0 /* LocalWallpaperDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000F0; };
+		A000000000000000000000EF /* LocalWallpaperDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000EF; };
+		A000000000000000000000E8 /* SteamDownloadUXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E8; };
+		A000000000000000000000E7 /* SteamDownloadPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E7; };
+		A000000000000000000000E6 /* SteamStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E6 /* SteamStoreTests.swift */; };
+		A000000000000000000000E5 /* SteamStoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E5 /* SteamStoreView.swift */; };
+		A000000000000000000000E4 /* SteamStoreService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E4 /* SteamStoreService.swift */; };
+		A00000000000000000000110 /* EngineAssetsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000110 /* EngineAssetsStore.swift */; };
+		A00000000000000000000111 /* EngineAssetsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000111 /* EngineAssetsTests.swift */; };
+		A000000000000000000000DE /* KineticSteamHelper.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DE /* KineticSteamHelper.xpc */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A000000000000000000000DF /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DF /* main.swift */; };
+		A000000000000000000000E0 /* SteamHelperService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E0 /* SteamHelperService.swift */; };
+		A000000000000000000000E3 /* SteamHelperShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E2 /* SteamHelperShared.swift */; };
+		A000000000000000000000E2 /* SteamHelperShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E2 /* SteamHelperShared.swift */; };
+		A000000000000000000000DD /* SteamWorkshopImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DD /* SteamWorkshopImportTests.swift */; };
+		A000000000000000000000DC /* SteamCMDTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DC /* SteamCMDTests.swift */; };
+		A000000000000000000000DB /* SteamSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DB /* SteamSettingsView.swift */; };
+		A000000000000000000000DA /* SteamAcquisitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000DA /* SteamAcquisitionService.swift */; };
+		A000000000000000000000D9 /* SteamWorkshopImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D9 /* SteamWorkshopImporter.swift */; };
+		A000000000000000000000D8 /* SteamWorkshopPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D8 /* SteamWorkshopPackage.swift */; };
+		A000000000000000000000D7 /* SteamCMDInstallation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D7 /* SteamCMDInstallation.swift */; };
+		A000000000000000000000D6 /* SteamCMDProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D6 /* SteamCMDProcess.swift */; };
+		A000000000000000000000D5 /* SteamCMDOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D5 /* SteamCMDOutput.swift */; };
+		A000000000000000000000C0 /* WebRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C0 /* WebRenderer.swift */; };
+		A000000000000000000000C2 /* DisplaySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C2 /* DisplaySession.swift */; };
+		A000000000000000000000C3 /* DisplayRuntimeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C3 /* DisplayRuntimeSession.swift */; };
+		A000000000000000000000C4 /* MultiDisplayRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C4 /* MultiDisplayRuntimeTests.swift */; };
+		A000000000000000000000C5 /* DisplayDesktopSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C5 /* DisplayDesktopSurface.swift */; };
+		A000000000000000000000C6 /* SplitDisplayCrossfadeTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C6 /* SplitDisplayCrossfadeTestSession.swift */; };
+		A000000000000000000000C7 /* PerDisplayCrossfadeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C7 /* PerDisplayCrossfadeTests.swift */; };
+		A000000000000000000000C8 /* VideoFormats.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C8 /* VideoFormats.swift */; };
+		A000000000000000000000C9 /* PosterFrameSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C9 /* PosterFrameSelector.swift */; };
+		A000000000000000000000CA /* FinderDropImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CA /* FinderDropImport.swift */; };
+		A000000000000000000000CE /* LocalOrganizationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CE /* LocalOrganizationStore.swift */; };
+		A000000000000000000000CF /* LocalOrganizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CF /* LocalOrganizationTests.swift */; };
+		A000000000000000000000D0 /* ContentViewOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D0 /* ContentViewOptions.swift */; };
+		A000000000000000000000D1 /* ContentHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D1 /* ContentHeader.swift */; };
+		A000000000000000000000D2 /* ContentOptionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D2 /* ContentOptionsTests.swift */; };
+		A000000000000000000000D3 /* FloatingToolbarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D3 /* FloatingToolbarState.swift */; };
+		A000000000000000000000D4 /* FloatingToolbarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000D4 /* FloatingToolbarTests.swift */; };
+		A000000000000000000000CB /* FinderDropImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CB /* FinderDropImportTests.swift */; };
+		A000000000000000000000CC /* PosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CC /* PosterView.swift */; };
+		A000000000000000000000CD /* PosterGridTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000CD /* PosterGridTests.swift */; };
+		A000000000000000000000C1 /* WebRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000C1 /* WebRendererTests.swift */; };
+		A000000000000000000000B3 /* ErrorRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B3 /* ErrorRecoveryTests.swift */; };
+		A000000000000000000000B2 /* RecoveryNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B2 /* RecoveryNotice.swift */; };
+		A000000000000000000000B4 /* LiquidGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B4 /* LiquidGlass.swift */; };
+		A000000000000000000000B7 /* KineticLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B7 /* KineticLogo.swift */; };
+		A000000000000000000000B8 /* LaunchAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B8 /* LaunchAnimation.swift */; };
+		A000000000000000000000B9 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B9 /* AppIcon.icon */; };
+		A000000000000000000000BA /* LogoAndLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000BA /* LogoAndLaunchTests.swift */; };
+		A000000000000000000000B5 /* LiquidGlassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B5 /* LiquidGlassTests.swift */; };
 		A00000000000000000000001 /* KineticApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000001 /* KineticApp.swift */; };
 		A00000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000002 /* AppDelegate.swift */; };
+		A000000000000000000000A0 /* MenuBarControllerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A0 /* MenuBarControllerView.swift */; };
+		A000000000000000000000A1 /* MenuBarPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A1 /* MenuBarPresentationTests.swift */; };
+		A000000000000000000000A2 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A2 /* SettingsStore.swift */; };
+		A000000000000000000000A3 /* SettingsWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A3 /* SettingsWindowView.swift */; };
+		A000000000000000000000A4 /* SettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A4 /* SettingsStoreTests.swift */; };
+		A000000000000000000000A5 /* AppearanceTransitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A5 /* AppearanceTransitionTests.swift */; };
+		A000000000000000000000A6 /* SmartPauseMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A6 /* SmartPauseMonitor.swift */; };
+		A000000000000000000000A7 /* LiveSmartPauseProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A7 /* LiveSmartPauseProbe.swift */; };
+		A000000000000000000000A8 /* SmartPauseMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A8 /* SmartPauseMonitorTests.swift */; };
+		A000000000000000000000A9 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000A9 /* LoginItemController.swift */; };
+		A000000000000000000000AD /* OnboardingDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AD /* OnboardingDemo.swift */; };
+		A000000000000000000000AE /* OnboardingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AE /* OnboardingController.swift */; };
+		A000000000000000000000AF /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AF /* WelcomeView.swift */; };
+		A000000000000000000000B0 /* Demos in Resources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B0 /* Demos */; };
+		A000000000000000000000B1 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000B1 /* OnboardingTests.swift */; };
+		A000000000000000000000AA /* LaunchContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AA /* LaunchContext.swift */; };
+		A000000000000000000000AB /* WallpaperRestoration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AB /* WallpaperRestoration.swift */; };
+		A000000000000000000000AC /* LaunchAndLoginItemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000AC /* LaunchAndLoginItemTests.swift */; };
 		A00000000000000000000080 /* MainShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000080 /* MainShellView.swift */; };
 		A00000000000000000000081 /* MainWindowDesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000081 /* MainWindowDesignTokens.swift */; };
+		A0000000000000000000009D /* SidebarCollapseGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000009D /* SidebarCollapseGuard.swift */; };
 		A00000000000000000000082 /* WallpaperGridLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000082 /* WallpaperGridLayout.swift */; };
 		A00000000000000000000083 /* WallpaperGridLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000083 /* WallpaperGridLayoutTests.swift */; };
 		A00000000000000000000090 /* WallpaperCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000090 /* WallpaperCard.swift */; };
+		A00000000000000000000091 /* CardStatesDemoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000091 /* CardStatesDemoLibrary.swift */; };
 		A00000000000000000000092 /* WallpaperCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000092 /* WallpaperCardTests.swift */; };
 		A00000000000000000000093 /* WallpaperPreviewCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000093 /* WallpaperPreviewCoordinator.swift */; };
 		A00000000000000000000094 /* VideoPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000094 /* VideoPreviewSession.swift */; };
@@ -20,6 +105,11 @@
 		A00000000000000000000096 /* LivePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000096 /* LivePreviewView.swift */; };
 		A00000000000000000000097 /* LivePreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000097 /* LivePreviewDiagnostics.swift */; };
 		A00000000000000000000098 /* LivePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000098 /* LivePreviewTests.swift */; };
+		A00000000000000000000099 /* WallpaperDeletionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000099 /* WallpaperDeletionService.swift */; };
+		A0000000000000000000009A /* WallpaperDeletionConfirmation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000009A /* WallpaperDeletionConfirmation.swift */; };
+		A0000000000000000000009B /* WallpaperDeletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000009B /* WallpaperDeletionTests.swift */; };
+		A0000000000000000000009C /* SearchFavoritesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000009C /* SearchFavoritesTests.swift */; };
+		A0000000000000000000009E /* SidebarCollapseGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000009E /* SidebarCollapseGuardTests.swift */; };
 		A00000000000000000000003 /* Wallpaper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000003 /* Wallpaper.swift */; };
 		A00000000000000000000004 /* WallpaperType.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* WallpaperType.swift */; };
 		A00000000000000000000005 /* WallpaperSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* WallpaperSource.swift */; };
@@ -31,22 +121,33 @@
 		A00000000000000000000011 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000009 /* InfoPlist.strings */; };
 		A00000000000000000000030 /* VideoContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000030; };
 		A00000000000000000000031 /* VideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000031; };
+		A00000000000000000000032 /* VideoRendererTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000032; };
 		A00000000000000000000033 /* VideoRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000033; };
 		A00000000000000000000034 = {isa = PBXBuildFile; fileRef = B00000000000000000000034; };
 		A00000000000000000000040 /* WallpaperRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000040 /* WallpaperRenderer.swift */; };
 		A00000000000000000000041 /* WallpaperRuntimeMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000041 /* WallpaperRuntimeMachine.swift */; };
 		A00000000000000000000042 /* WallpaperRuntimeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000042 /* WallpaperRuntimeManager.swift */; };
+		A00000000000000000000043 /* RuntimeStateTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000043 /* RuntimeStateTestSession.swift */; };
 		A00000000000000000000044 /* WallpaperRuntimeMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000044 /* WallpaperRuntimeMachineTests.swift */; };
 		A00000000000000000000045 /* WallpaperRuntimeManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000045 /* WallpaperRuntimeManagerTests.swift */; };
 		A00000000000000000000050 /* CrossfadeDesktopHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000050 /* CrossfadeDesktopHost.swift */; };
+		A00000000000000000000051 /* CrossfadeTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000051 /* CrossfadeTestSession.swift */; };
 		A00000000000000000000052 /* CrossfadeDesktopHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000052 /* CrossfadeDesktopHostTests.swift */; };
 		A00000000000000000000060 /* LibraryStorageLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000060 /* LibraryStorageLocation.swift */; };
 		A00000000000000000000061 /* LibraryQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000061 /* LibraryQuery.swift */; };
 		A00000000000000000000062 /* WallpaperLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000062 /* WallpaperLibrary.swift */; };
+		A00000000000000000000063 /* LibraryTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000063 /* LibraryTestSession.swift */; };
 		A00000000000000000000064 /* WallpaperLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000064 /* WallpaperLibraryTests.swift */; };
 		A00000000000000000000070 /* LocalImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000070 /* LocalImportService.swift */; };
 		A00000000000000000000071 /* LocalImportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000071 /* LocalImportPanel.swift */; };
+		A00000000000000000000072 /* ImportTestSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000072 /* ImportTestSession.swift */; };
 		A00000000000000000000073 /* LocalImportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000073 /* LocalImportServiceTests.swift */; };
+		A000000000000000000000E9 /* DisplayRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000E9 /* DisplayRegistry.swift */; };
+		A000000000000000000000EA /* DisplayAssignmentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000EA /* DisplayAssignmentStore.swift */; };
+		A000000000000000000000EB /* MultiDisplayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000EB /* MultiDisplayController.swift */; };
+		A000000000000000000000EC /* MultiDisplayCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000EC /* MultiDisplayCoreTests.swift */; };
+		A000000000000000000000ED /* DisplayTargetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000ED /* DisplayTargetViews.swift */; };
+		A000000000000000000000EE /* DisplayTargetUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B000000000000000000000EE /* DisplayTargetUITests.swift */; };
 /* End PBXBuildFile section */
 		A00000000000000000000014 /* DesktopDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000014; };
 		A00000000000000000000015 /* DesktopWallpaperWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015; };
@@ -63,16 +164,100 @@
 			remoteGlobalIDString = D00000000000000000000001;
 			remoteInfo = Kinetic;
 		};
+		000000000000000000000005 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D00000000000000000000003;
+			remoteInfo = KineticSteamHelper;
+		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		E0000000000000000000000A /* Embed XPC Services */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
+			dstSubfolderSpec = 16;
+			files = (A000000000000000000000DE /* KineticSteamHelper.xpc in Embed XPC Services */);
+			name = "Embed XPC Services";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		B00000000000000000000112 /* WorkshopDependencyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopDependencyStore.swift; sourceTree = "<group>"; };
+		B000000000000000000000FC /* SceneRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneRendererTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000FA /* SceneRuntimeTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneRuntimeTestSession.swift; sourceTree = "<group>"; };
+		B000000000000000000000F9 /* SceneRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneRenderer.swift; sourceTree = "<group>"; };
+		B000000000000000000000F8 /* SettingsPerformanceTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPerformanceTestSession.swift; sourceTree = "<group>"; };
+		B000000000000000000000F7 /* PerformanceCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceCoreTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000F6 /* PerformancePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformancePolicy.swift; sourceTree = "<group>"; };
+		B000000000000000000000F5 /* AppControlsTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlsTestSession.swift; sourceTree = "<group>"; };
+		B000000000000000000000F4 /* MenuBarMultiDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarMultiDisplayTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000F3 /* SteamDisplayApplyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamDisplayApplyTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000F2 /* SteamDisplayDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamDisplayDrag.swift; sourceTree = "<group>"; };
+		B000000000000000000000F1 /* SteamDisplayApplyCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamDisplayApplyCoordinator.swift; sourceTree = "<group>"; };
+		B000000000000000000000F0 /* LocalWallpaperDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWallpaperDragTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000EF /* LocalWallpaperDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWallpaperDrag.swift; sourceTree = "<group>"; };
+		B000000000000000000000E8 /* SteamDownloadUXTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamDownloadUXTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000E7 /* SteamDownloadPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamDownloadPresentation.swift; sourceTree = "<group>"; };
+		B000000000000000000000E6 /* SteamStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamStoreTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000E5 /* SteamStoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamStoreView.swift; sourceTree = "<group>"; };
+		B000000000000000000000E4 /* SteamStoreService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamStoreService.swift; sourceTree = "<group>"; };
+		B00000000000000000000110 /* EngineAssetsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineAssetsStore.swift; sourceTree = "<group>"; };
+		B00000000000000000000111 /* EngineAssetsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineAssetsTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000DE /* KineticSteamHelper.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = KineticSteamHelper.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		B000000000000000000000DF /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		B000000000000000000000E0 /* SteamHelperService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamHelperService.swift; sourceTree = "<group>"; };
+		B000000000000000000000E1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B000000000000000000000E2 /* SteamHelperShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamHelperShared.swift; sourceTree = "<group>"; };
+		B000000000000000000000DD /* SteamWorkshopImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamWorkshopImportTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000DC /* SteamCMDTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamCMDTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000DB /* SteamSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamSettingsView.swift; sourceTree = "<group>"; };
+		B000000000000000000000DA /* SteamAcquisitionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamAcquisitionService.swift; sourceTree = "<group>"; };
+		B000000000000000000000D9 /* SteamWorkshopImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamWorkshopImporter.swift; sourceTree = "<group>"; };
+		B000000000000000000000D8 /* SteamWorkshopPackage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamWorkshopPackage.swift; sourceTree = "<group>"; };
+		B000000000000000000000D7 /* SteamCMDInstallation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamCMDInstallation.swift; sourceTree = "<group>"; };
+		B000000000000000000000D6 /* SteamCMDProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamCMDProcess.swift; sourceTree = "<group>"; };
+		B000000000000000000000D5 /* SteamCMDOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamCMDOutput.swift; sourceTree = "<group>"; };
+		B000000000000000000000C0 /* WebRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRenderer.swift; sourceTree = "<group>"; };
+		B000000000000000000000C1 /* WebRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRendererTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000B3 /* ErrorRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorRecoveryTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000B2 /* RecoveryNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryNotice.swift; sourceTree = "<group>"; };
+		B000000000000000000000B4 /* LiquidGlass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlass.swift; sourceTree = "<group>"; };
+		B000000000000000000000B7 /* KineticLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KineticLogo.swift; sourceTree = "<group>"; };
+		B000000000000000000000B8 /* LaunchAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAnimation.swift; sourceTree = "<group>"; };
+		B000000000000000000000B9 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		B000000000000000000000BA /* LogoAndLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogoAndLaunchTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000B5 /* LiquidGlassTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlassTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000001 /* KineticApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KineticApp.swift; sourceTree = "<group>"; };
 		B00000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		B000000000000000000000A0 /* MenuBarControllerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarControllerView.swift; sourceTree = "<group>"; };
+		B000000000000000000000A1 /* MenuBarPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPresentationTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000A2 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		B000000000000000000000A3 /* SettingsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowView.swift; sourceTree = "<group>"; };
+		B000000000000000000000A4 /* SettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStoreTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000A5 /* AppearanceTransitionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceTransitionTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000A6 /* SmartPauseMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartPauseMonitor.swift; sourceTree = "<group>"; };
+		B000000000000000000000A7 /* LiveSmartPauseProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSmartPauseProbe.swift; sourceTree = "<group>"; };
+		B000000000000000000000A8 /* SmartPauseMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartPauseMonitorTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000A9 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
+		B000000000000000000000AD /* OnboardingDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingDemo.swift; sourceTree = "<group>"; };
+		B000000000000000000000AE /* OnboardingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingController.swift; sourceTree = "<group>"; };
+		B000000000000000000000AF /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
+		B000000000000000000000B0 /* Demos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Demos; sourceTree = "<group>"; };
+		B000000000000000000000B1 /* OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000AA /* LaunchContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchContext.swift; sourceTree = "<group>"; };
+		B000000000000000000000AB /* WallpaperRestoration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRestoration.swift; sourceTree = "<group>"; };
+		B000000000000000000000AC /* LaunchAndLoginItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAndLoginItemTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000080 /* MainShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainShellView.swift; sourceTree = "<group>"; };
 		B00000000000000000000081 /* MainWindowDesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowDesignTokens.swift; sourceTree = "<group>"; };
+		B0000000000000000000009D /* SidebarCollapseGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCollapseGuard.swift; sourceTree = "<group>"; };
 		B00000000000000000000082 /* WallpaperGridLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperGridLayout.swift; sourceTree = "<group>"; };
 		B00000000000000000000083 /* WallpaperGridLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperGridLayoutTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000090 /* WallpaperCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperCard.swift; sourceTree = "<group>"; };
+		B00000000000000000000091 /* CardStatesDemoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardStatesDemoLibrary.swift; sourceTree = "<group>"; };
 		B00000000000000000000092 /* WallpaperCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperCardTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000093 /* WallpaperPreviewCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperPreviewCoordinator.swift; sourceTree = "<group>"; };
 		B00000000000000000000094 /* VideoPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPreviewSession.swift; sourceTree = "<group>"; };
@@ -80,11 +265,17 @@
 		B00000000000000000000096 /* LivePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePreviewView.swift; sourceTree = "<group>"; };
 		B00000000000000000000097 /* LivePreviewDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePreviewDiagnostics.swift; sourceTree = "<group>"; };
 		B00000000000000000000098 /* LivePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePreviewTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000099 /* WallpaperDeletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperDeletionService.swift; sourceTree = "<group>"; };
+		B0000000000000000000009A /* WallpaperDeletionConfirmation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperDeletionConfirmation.swift; sourceTree = "<group>"; };
+		B0000000000000000000009B /* WallpaperDeletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperDeletionTests.swift; sourceTree = "<group>"; };
+		B0000000000000000000009C /* SearchFavoritesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchFavoritesTests.swift; sourceTree = "<group>"; };
+		B0000000000000000000009E /* SidebarCollapseGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCollapseGuardTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000003 /* Wallpaper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wallpaper.swift; sourceTree = "<group>"; };
 		B00000000000000000000004 /* WallpaperType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperType.swift; sourceTree = "<group>"; };
 		B00000000000000000000005 /* WallpaperSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperSource.swift; sourceTree = "<group>"; };
 		B00000000000000000000006 /* PlaybackState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackState.swift; sourceTree = "<group>"; };
 		B00000000000000000000007 /* WallpaperRuntimeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRuntimeState.swift; sourceTree = "<group>"; };
+		B000000000000000000000C2 /* DisplaySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplaySession.swift; sourceTree = "<group>"; };
 		B00000000000000000000008 /* SettingsState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsState.swift; sourceTree = "<group>"; };
 		B00000000000000000000009 /* CoreDomainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreDomainTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000010 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
@@ -95,22 +286,51 @@
 		B00000000000000000000021 /* KineticTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KineticTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000030 /* VideoContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoContentView.swift; sourceTree = "<group>"; };
 		B00000000000000000000031 /* VideoRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRenderer.swift; sourceTree = "<group>"; };
+		B00000000000000000000032 /* VideoRendererTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRendererTestSession.swift; sourceTree = "<group>"; };
 		B00000000000000000000033 /* VideoRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRendererTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000034 = {isa = PBXFileReference; lastKnownFileType = folder; path = KineticTests/Fixtures; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000040 /* WallpaperRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRenderer.swift; sourceTree = "<group>"; };
 		B00000000000000000000041 /* WallpaperRuntimeMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRuntimeMachine.swift; sourceTree = "<group>"; };
 		B00000000000000000000042 /* WallpaperRuntimeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRuntimeManager.swift; sourceTree = "<group>"; };
+		B000000000000000000000C3 /* DisplayRuntimeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRuntimeSession.swift; sourceTree = "<group>"; };
+		B00000000000000000000043 /* RuntimeStateTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeStateTestSession.swift; sourceTree = "<group>"; };
 		B00000000000000000000044 /* WallpaperRuntimeMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRuntimeMachineTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000045 /* WallpaperRuntimeManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRuntimeManagerTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000C4 /* MultiDisplayRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDisplayRuntimeTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000050 /* CrossfadeDesktopHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossfadeDesktopHost.swift; sourceTree = "<group>"; };
+		B000000000000000000000C5 /* DisplayDesktopSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayDesktopSurface.swift; sourceTree = "<group>"; };
+		B000000000000000000000C6 /* SplitDisplayCrossfadeTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitDisplayCrossfadeTestSession.swift; sourceTree = "<group>"; };
+		B00000000000000000000051 /* CrossfadeTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossfadeTestSession.swift; sourceTree = "<group>"; };
 		B00000000000000000000052 /* CrossfadeDesktopHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossfadeDesktopHostTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000C7 /* PerDisplayCrossfadeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerDisplayCrossfadeTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000C8 /* VideoFormats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFormats.swift; sourceTree = "<group>"; };
+		B000000000000000000000C9 /* PosterFrameSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PosterFrameSelector.swift; sourceTree = "<group>"; };
+		B000000000000000000000CA /* FinderDropImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderDropImport.swift; sourceTree = "<group>"; };
+		B000000000000000000000CE /* LocalOrganizationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOrganizationStore.swift; sourceTree = "<group>"; };
+		B000000000000000000000CF /* LocalOrganizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOrganizationTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000D0 /* ContentViewOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewOptions.swift; sourceTree = "<group>"; };
+		B000000000000000000000D1 /* ContentHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentHeader.swift; sourceTree = "<group>"; };
+		B000000000000000000000D2 /* ContentOptionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentOptionsTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000D3 /* FloatingToolbarState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingToolbarState.swift; sourceTree = "<group>"; };
+		B000000000000000000000D4 /* FloatingToolbarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingToolbarTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000CB /* FinderDropImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderDropImportTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000CC /* PosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PosterView.swift; sourceTree = "<group>"; };
+		B000000000000000000000CD /* PosterGridTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PosterGridTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000060 /* LibraryStorageLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStorageLocation.swift; sourceTree = "<group>"; };
 		B00000000000000000000061 /* LibraryQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryQuery.swift; sourceTree = "<group>"; };
 		B00000000000000000000062 /* WallpaperLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperLibrary.swift; sourceTree = "<group>"; };
+		B00000000000000000000063 /* LibraryTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryTestSession.swift; sourceTree = "<group>"; };
 		B00000000000000000000064 /* WallpaperLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperLibraryTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000070 /* LocalImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalImportService.swift; sourceTree = "<group>"; };
 		B00000000000000000000071 /* LocalImportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalImportPanel.swift; sourceTree = "<group>"; };
+		B00000000000000000000072 /* ImportTestSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportTestSession.swift; sourceTree = "<group>"; };
 		B00000000000000000000073 /* LocalImportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalImportServiceTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000E9 /* DisplayRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRegistry.swift; sourceTree = "<group>"; };
+		B000000000000000000000EA /* DisplayAssignmentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayAssignmentStore.swift; sourceTree = "<group>"; };
+		B000000000000000000000EB /* MultiDisplayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDisplayController.swift; sourceTree = "<group>"; };
+		B000000000000000000000EC /* MultiDisplayCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDisplayCoreTests.swift; sourceTree = "<group>"; };
+		B000000000000000000000ED /* DisplayTargetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayTargetViews.swift; sourceTree = "<group>"; };
+		B000000000000000000000EE /* DisplayTargetUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayTargetUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 		B00000000000000000000014 /* DesktopDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopDisplay.swift; sourceTree = "<group>"; };
 		B00000000000000000000015 /* DesktopWallpaperWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWallpaperWindow.swift; sourceTree = "<group>"; };
@@ -120,62 +340,72 @@
 		B00000000000000000000019 /* DesktopWindowSoakTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWindowSoakTests.swift; sourceTree = "<group>"; };
 
 /* Begin PBXFrameworksBuildPhase section */
-		E00000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A000000000000000000000FB /* KineticSceneRuntime in Frameworks */, ); runOnlyForDeploymentPostprocessing = 0; };
 		E00000000000000000000005 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000008 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		C0000000000000000000001E /* SceneRenderer */ = {isa = PBXGroup; children = (B000000000000000000000F9, B000000000000000000000FA, ); path = SceneRenderer; sourceTree = "<group>"; };
+		C0000000000000000000001D /* KineticSteamHelper */ = {isa = PBXGroup; children = (B000000000000000000000DF /* main.swift */, B000000000000000000000E0 /* SteamHelperService.swift */, B000000000000000000000E1 /* Info.plist */); path = KineticSteamHelper; sourceTree = "<group>"; };
+		C0000000000000000000001C /* Steam */ = {isa = PBXGroup; children = (B00000000000000000000112 /* WorkshopDependencyStore.swift */, B00000000000000000000110 /* EngineAssetsStore.swift */, B000000000000000000000E4 /* SteamStoreService.swift */, B000000000000000000000E2 /* SteamHelperShared.swift */, B000000000000000000000F1 /* SteamDisplayApplyCoordinator.swift */, B000000000000000000000DA /* SteamAcquisitionService.swift */, B000000000000000000000D9 /* SteamWorkshopImporter.swift */, B000000000000000000000D8 /* SteamWorkshopPackage.swift */, B000000000000000000000D7 /* SteamCMDInstallation.swift */, B000000000000000000000D6 /* SteamCMDProcess.swift */, B000000000000000000000D5 /* SteamCMDOutput.swift */, ); path = Steam; sourceTree = "<group>"; };
 		C00000000000000000000001 = {
 			isa = PBXGroup;
-			children = (C00000000000000000000002 /* Kinetic */, C00000000000000000000007 /* KineticTests */, C00000000000000000000006 /* Products */);
+			children = (C00000000000000000000002 /* Kinetic */, C0000000000000000000001D /* KineticSteamHelper */, C00000000000000000000007 /* KineticTests */, C00000000000000000000006 /* Products */);
 			sourceTree = "<group>";
 		};
 		C00000000000000000000002 /* Kinetic */ = {
 			isa = PBXGroup;
-			children = (C00000000000000000000003 /* App */, C00000000000000000000004 /* CoreDomain */, C00000000000000000000010 /* DesktopRuntime */, C00000000000000000000011 /* VideoRenderer */, C00000000000000000000012 /* Runtime */, C00000000000000000000013 /* Crossfade */, C00000000000000000000014 /* Library */, C00000000000000000000015 /* Import */, C00000000000000000000016 /* LivePreview */, C00000000000000000000005 /* Resources */, B00000000000000000000012 /* Info.plist */, B00000000000000000000013 /* Kinetic.entitlements */);
+			children = (C0000000000000000000001E /* SceneRenderer */, C0000000000000000000001C /* Steam */, C00000000000000000000003 /* App */, C00000000000000000000004 /* CoreDomain */, C00000000000000000000010 /* DesktopRuntime */, C00000000000000000000011 /* VideoRenderer */, C0000000000000000000001B /* WebRenderer */, C00000000000000000000012 /* Runtime */, C00000000000000000000013 /* Crossfade */, C00000000000000000000014 /* Library */, C00000000000000000000015 /* Import */, C00000000000000000000016 /* LivePreview */, C00000000000000000000017 /* Delete */, C00000000000000000000018 /* SystemMonitor */, C00000000000000000000019 /* Launch */, C0000000000000000000001A /* Onboarding */, C00000000000000000000005 /* Resources */, B00000000000000000000012 /* Info.plist */, B00000000000000000000013 /* Kinetic.entitlements */);
 			path = Kinetic;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000003 /* App */ = {
 			isa = PBXGroup;
-			children = (B00000000000000000000001 /* KineticApp.swift */, B00000000000000000000002 /* AppDelegate.swift */, B00000000000000000000080 /* MainShellView.swift */, B00000000000000000000081 /* MainWindowDesignTokens.swift */, B00000000000000000000082 /* WallpaperGridLayout.swift */, B00000000000000000000090 /* WallpaperCard.swift */);
+			children = (
+				B000000000000000000000F8 /* SettingsPerformanceTestSession.swift */,B000000000000000000000F5 /* AppControlsTestSession.swift */, B000000000000000000000F2 /* SteamDisplayDrag.swift */, B000000000000000000000EF /* LocalWallpaperDrag.swift */, B000000000000000000000ED /* DisplayTargetViews.swift */, B000000000000000000000E7 /* SteamDownloadPresentation.swift */, B000000000000000000000E5 /* SteamStoreView.swift */, B000000000000000000000DB /* SteamSettingsView.swift */, B000000000000000000000B7 /* KineticLogo.swift */, B000000000000000000000B8 /* LaunchAnimation.swift */, B000000000000000000000B4 /* LiquidGlass.swift */, B000000000000000000000B2 /* RecoveryNotice.swift */, B00000000000000000000001 /* KineticApp.swift */, B00000000000000000000002 /* AppDelegate.swift */, B000000000000000000000A0 /* MenuBarControllerView.swift */, B000000000000000000000A2 /* SettingsStore.swift */, B000000000000000000000A3 /* SettingsWindowView.swift */, B00000000000000000000080 /* MainShellView.swift */, B00000000000000000000081 /* MainWindowDesignTokens.swift */, B0000000000000000000009D /* SidebarCollapseGuard.swift */, B00000000000000000000082 /* WallpaperGridLayout.swift */, B00000000000000000000090 /* WallpaperCard.swift */, B000000000000000000000CC /* PosterView.swift */, B000000000000000000000D1 /* ContentHeader.swift */, B000000000000000000000D3 /* FloatingToolbarState.swift */, B00000000000000000000091 /* CardStatesDemoLibrary.swift */);
 			path = App;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000004 /* CoreDomain */ = {
 			isa = PBXGroup;
-			children = (B00000000000000000000003 /* Wallpaper.swift */, B00000000000000000000004 /* WallpaperType.swift */, B00000000000000000000005 /* WallpaperSource.swift */, B00000000000000000000006 /* PlaybackState.swift */, B00000000000000000000007 /* WallpaperRuntimeState.swift */, B00000000000000000000008 /* SettingsState.swift */);
+			children = (B00000000000000000000003 /* Wallpaper.swift */, B00000000000000000000004 /* WallpaperType.swift */, B00000000000000000000005 /* WallpaperSource.swift */, B00000000000000000000006 /* PlaybackState.swift */, B00000000000000000000007 /* WallpaperRuntimeState.swift */, B000000000000000000000C2 /* DisplaySession.swift */, B00000000000000000000008 /* SettingsState.swift */, B000000000000000000000C8 /* VideoFormats.swift */);
 			path = CoreDomain;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000005 /* Resources */ = {
 			isa = PBXGroup;
-			children = (C00000000000000000000008 /* Localizable.strings */, C00000000000000000000009 /* InfoPlist.strings */, B00000000000000000000034);
+			children = (C00000000000000000000008 /* Localizable.strings */, C00000000000000000000009 /* InfoPlist.strings */, B00000000000000000000034, B000000000000000000000B0 /* Demos */, B000000000000000000000B9 /* AppIcon.icon */);
 			path = Resources;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000006 /* Products */ = {
 			isa = PBXGroup;
-			children = (B00000000000000000000020 /* Kinetic.app */, B00000000000000000000021 /* KineticTests.xctest */);
+			children = (B000000000000000000000DE /* KineticSteamHelper.xpc */, B00000000000000000000020 /* Kinetic.app */, B00000000000000000000021 /* KineticTests.xctest */);
 			name = Products;
 			sourceTree = "<group>";
 		};
 		C00000000000000000000007 /* KineticTests */ = {
 			isa = PBXGroup;
-			children = (B00000000000000000000009 /* CoreDomainTests.swift */, B00000000000000000000018 /* DesktopWindowRuntimeTests.swift */, B00000000000000000000019 /* DesktopWindowSoakTests.swift */, B00000000000000000000033 /* VideoRendererTests.swift */, B00000000000000000000044 /* WallpaperRuntimeMachineTests.swift */, B00000000000000000000045 /* WallpaperRuntimeManagerTests.swift */, B00000000000000000000052 /* CrossfadeDesktopHostTests.swift */, B00000000000000000000064 /* WallpaperLibraryTests.swift */, B00000000000000000000073 /* LocalImportServiceTests.swift */, B00000000000000000000083 /* WallpaperGridLayoutTests.swift */, B00000000000000000000092 /* WallpaperCardTests.swift */, B00000000000000000000098 /* LivePreviewTests.swift */);
+			children = (B00000000000000000000111 /* EngineAssetsTests.swift */, B000000000000000000000FC /* SceneRendererTests.swift */, B000000000000000000000F7 /* PerformanceCoreTests.swift */, B000000000000000000000F4 /* MenuBarMultiDisplayTests.swift */, B000000000000000000000F3 /* SteamDisplayApplyTests.swift */, B000000000000000000000F0 /* LocalWallpaperDragTests.swift */, B000000000000000000000EE /* DisplayTargetUITests.swift */, B000000000000000000000EC /* MultiDisplayCoreTests.swift */, B000000000000000000000E8 /* SteamDownloadUXTests.swift */, B000000000000000000000E6 /* SteamStoreTests.swift */, B000000000000000000000DD /* SteamWorkshopImportTests.swift */, B000000000000000000000DC /* SteamCMDTests.swift */, B000000000000000000000C1 /* WebRendererTests.swift */, B000000000000000000000BA /* LogoAndLaunchTests.swift */, B000000000000000000000B5 /* LiquidGlassTests.swift */, B000000000000000000000B3 /* ErrorRecoveryTests.swift */, B00000000000000000000009 /* CoreDomainTests.swift */, B00000000000000000000018 /* DesktopWindowRuntimeTests.swift */, B00000000000000000000019 /* DesktopWindowSoakTests.swift */, B00000000000000000000033 /* VideoRendererTests.swift */, B00000000000000000000044 /* WallpaperRuntimeMachineTests.swift */, B00000000000000000000045 /* WallpaperRuntimeManagerTests.swift */, B000000000000000000000C4 /* MultiDisplayRuntimeTests.swift */, B00000000000000000000052 /* CrossfadeDesktopHostTests.swift */, B000000000000000000000C7 /* PerDisplayCrossfadeTests.swift */, B00000000000000000000064 /* WallpaperLibraryTests.swift */, B000000000000000000000CF /* LocalOrganizationTests.swift */, B000000000000000000000D2 /* ContentOptionsTests.swift */, B000000000000000000000D4 /* FloatingToolbarTests.swift */, B00000000000000000000073 /* LocalImportServiceTests.swift */, B000000000000000000000CB /* FinderDropImportTests.swift */, B000000000000000000000CD /* PosterGridTests.swift */, B00000000000000000000083 /* WallpaperGridLayoutTests.swift */, B00000000000000000000092 /* WallpaperCardTests.swift */, B00000000000000000000098 /* LivePreviewTests.swift */, B0000000000000000000009B /* WallpaperDeletionTests.swift */, B0000000000000000000009C /* SearchFavoritesTests.swift */, B0000000000000000000009E /* SidebarCollapseGuardTests.swift */, B000000000000000000000A1 /* MenuBarPresentationTests.swift */, B000000000000000000000A4 /* SettingsStoreTests.swift */, B000000000000000000000A5 /* AppearanceTransitionTests.swift */, B000000000000000000000A8 /* SmartPauseMonitorTests.swift */, B000000000000000000000AC /* LaunchAndLoginItemTests.swift */, B000000000000000000000B1 /* OnboardingTests.swift */);
 			path = KineticTests;
 			sourceTree = "<group>";
 		};
-		C00000000000000000000011 = {isa = PBXGroup; children = (B00000000000000000000030, B00000000000000000000031); path = VideoRenderer; sourceTree = "<group>"; };
-		C00000000000000000000012 /* Runtime */ = {isa = PBXGroup; children = (B00000000000000000000040 /* WallpaperRenderer.swift */, B00000000000000000000041 /* WallpaperRuntimeMachine.swift */, B00000000000000000000042 /* WallpaperRuntimeManager.swift */); path = Runtime; sourceTree = "<group>"; };
-		C00000000000000000000013 /* Crossfade */ = {isa = PBXGroup; children = (B00000000000000000000050 /* CrossfadeDesktopHost.swift */); path = Crossfade; sourceTree = "<group>"; };
-		C00000000000000000000014 /* Library */ = {isa = PBXGroup; children = (B00000000000000000000060 /* LibraryStorageLocation.swift */, B00000000000000000000061 /* LibraryQuery.swift */, B00000000000000000000062 /* WallpaperLibrary.swift */); path = Library; sourceTree = "<group>"; };
-		C00000000000000000000015 /* Import */ = {isa = PBXGroup; children = (B00000000000000000000070 /* LocalImportService.swift */, B00000000000000000000071 /* LocalImportPanel.swift */); path = Import; sourceTree = "<group>"; };
+		C00000000000000000000011 = {isa = PBXGroup; children = (B00000000000000000000030, B00000000000000000000031, B00000000000000000000032); path = VideoRenderer; sourceTree = "<group>"; };
+		C0000000000000000000001B /* WebRenderer */ = {isa = PBXGroup; children = (B000000000000000000000C0 /* WebRenderer.swift */); path = WebRenderer; sourceTree = "<group>"; };
+		C00000000000000000000012 /* Runtime */ = {isa = PBXGroup; children = (B000000000000000000000EB /* MultiDisplayController.swift */, B00000000000000000000040 /* WallpaperRenderer.swift */, B00000000000000000000041 /* WallpaperRuntimeMachine.swift */, B00000000000000000000042 /* WallpaperRuntimeManager.swift */, B000000000000000000000C3 /* DisplayRuntimeSession.swift */, B00000000000000000000043 /* RuntimeStateTestSession.swift */); path = Runtime; sourceTree = "<group>"; };
+		C00000000000000000000013 /* Crossfade */ = {isa = PBXGroup; children = (B00000000000000000000050 /* CrossfadeDesktopHost.swift */, B000000000000000000000C5 /* DisplayDesktopSurface.swift */, B00000000000000000000051 /* CrossfadeTestSession.swift */, B000000000000000000000C6 /* SplitDisplayCrossfadeTestSession.swift */); path = Crossfade; sourceTree = "<group>"; };
+		C00000000000000000000014 /* Library */ = {isa = PBXGroup; children = (B00000000000000000000060 /* LibraryStorageLocation.swift */, B00000000000000000000061 /* LibraryQuery.swift */, B00000000000000000000062 /* WallpaperLibrary.swift */, B000000000000000000000CE /* LocalOrganizationStore.swift */, B000000000000000000000D0 /* ContentViewOptions.swift */, B00000000000000000000063 /* LibraryTestSession.swift */); path = Library; sourceTree = "<group>"; };
+		C00000000000000000000015 /* Import */ = {isa = PBXGroup; children = (B00000000000000000000070 /* LocalImportService.swift */, B00000000000000000000071 /* LocalImportPanel.swift */, B000000000000000000000C9 /* PosterFrameSelector.swift */, B000000000000000000000CA /* FinderDropImport.swift */, B00000000000000000000072 /* ImportTestSession.swift */); path = Import; sourceTree = "<group>"; };
 		C00000000000000000000016 /* LivePreview */ = {isa = PBXGroup; children = (B00000000000000000000093 /* WallpaperPreviewCoordinator.swift */, B00000000000000000000094 /* VideoPreviewSession.swift */, B00000000000000000000095 /* WebPreviewSession.swift */, B00000000000000000000096 /* LivePreviewView.swift */, B00000000000000000000097 /* LivePreviewDiagnostics.swift */); path = LivePreview; sourceTree = "<group>"; };
+		C00000000000000000000019 /* Launch */ = {isa = PBXGroup; children = (B000000000000000000000EA /* DisplayAssignmentStore.swift */, B000000000000000000000A9 /* LoginItemController.swift */, B000000000000000000000AA /* LaunchContext.swift */, B000000000000000000000AB /* WallpaperRestoration.swift */); path = Launch; sourceTree = "<group>"; };
+		C0000000000000000000001A /* Onboarding */ = {isa = PBXGroup; children = (B000000000000000000000AD /* OnboardingDemo.swift */, B000000000000000000000AE /* OnboardingController.swift */, B000000000000000000000AF /* WelcomeView.swift */); path = Onboarding; sourceTree = "<group>"; };
+		C00000000000000000000018 /* SystemMonitor */ = {isa = PBXGroup; children = (B000000000000000000000F6 /* PerformancePolicy.swift */, B000000000000000000000A6 /* SmartPauseMonitor.swift */, B000000000000000000000A7 /* LiveSmartPauseProbe.swift */); path = SystemMonitor; sourceTree = "<group>"; };
+		C00000000000000000000017 /* Delete */ = {isa = PBXGroup; children = (B00000000000000000000099 /* WallpaperDeletionService.swift */, B0000000000000000000009A /* WallpaperDeletionConfirmation.swift */); path = Delete; sourceTree = "<group>"; };
 /* End PBXGroup section */
 		C00000000000000000000010 /* DesktopRuntime */ = {
 			isa = PBXGroup;
-			children = (B00000000000000000000014, B00000000000000000000015, B00000000000000000000016, B00000000000000000000017);
+			children = (B000000000000000000000E9 /* DisplayRegistry.swift */, B00000000000000000000014, B00000000000000000000015, B00000000000000000000016, B00000000000000000000017);
 			path = DesktopRuntime;
 			sourceTree = "<group>";
 		};
@@ -184,10 +414,11 @@
 		D00000000000000000000001 /* Kinetic */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F00000000000000000000012;
-			buildPhases = (E00000000000000000000001, E00000000000000000000002, E00000000000000000000003);
+			buildPhases = (E00000000000000000000001, E00000000000000000000002, E00000000000000000000003, E0000000000000000000000A /* Embed XPC Services */);
 			buildRules = ();
-			dependencies = ();
+			dependencies = (000000000000000000000004);
 			name = Kinetic;
+			packageProductDependencies = (000000000000000000000027 /* KineticSceneRuntime */, );
 			productName = Kinetic;
 			productReference = B00000000000000000000020 /* Kinetic.app */;
 			productType = "com.apple.product-type.application";
@@ -203,6 +434,17 @@
 			productReference = B00000000000000000000021 /* KineticTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		D00000000000000000000003 /* KineticSteamHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00000000000000000000014;
+			buildPhases = (E00000000000000000000007, E00000000000000000000008);
+			buildRules = ();
+			dependencies = ();
+			name = KineticSteamHelper;
+			productName = KineticSteamHelper;
+			productReference = B000000000000000000000DE /* KineticSteamHelper.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -215,6 +457,7 @@
 				TargetAttributes = {
 					D00000000000000000000001 = {CreatedOnToolsVersion = 15.0; };
 					D00000000000000000000002 = {CreatedOnToolsVersion = 15.0; TestTargetID = D00000000000000000000001; };
+					D00000000000000000000003 = {CreatedOnToolsVersion = 15.0; };
 				};
 			};
 			buildConfigurationList = F00000000000000000000011;
@@ -226,7 +469,8 @@
 			productRefGroup = C00000000000000000000006 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (D00000000000000000000001 /* Kinetic */, D00000000000000000000002 /* KineticTests */);
+			packageReferences = (000000000000000000000026 /* KineticSceneRuntime */, );
+			targets = (D00000000000000000000001 /* Kinetic */, D00000000000000000000002 /* KineticTests */, D00000000000000000000003 /* KineticSteamHelper */);
 		};
 /* End PBXProject section */
 
@@ -234,7 +478,7 @@
 		E00000000000000000000003 = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A00000000000000000000010 /* Localizable.strings in Resources */, A00000000000000000000011 /* InfoPlist.strings in Resources */, A00000000000000000000034);
+			files = (A00000000000000000000010 /* Localizable.strings in Resources */, A00000000000000000000011 /* InfoPlist.strings in Resources */, A00000000000000000000034, A000000000000000000000B0 /* Demos in Resources */, A000000000000000000000B9 /* AppIcon.icon in Resources */);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E00000000000000000000006 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -244,14 +488,17 @@
 		E00000000000000000000001 = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A00000000000000000000001, A00000000000000000000002, A00000000000000000000080, A00000000000000000000081, A00000000000000000000082, A00000000000000000000090, A00000000000000000000093, A00000000000000000000094, A00000000000000000000095, A00000000000000000000096, A00000000000000000000097, A00000000000000000000003, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, A00000000000000000000007, A00000000000000000000008, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016, A00000000000000000000017, A00000000000000000000030, A00000000000000000000031, A00000000000000000000040, A00000000000000000000041, A00000000000000000000042, A00000000000000000000050, A00000000000000000000060, A00000000000000000000061, A00000000000000000000062, A00000000000000000000070, A00000000000000000000071);
+			files = (A000000000000000000000FA /* SceneRuntimeTestSession.swift in Sources */, A000000000000000000000F9 /* SceneRenderer.swift in Sources */,
+				A00000000000000000000112 /* WorkshopDependencyStore.swift in Sources */, A00000000000000000000110 /* EngineAssetsStore.swift in Sources */, A000000000000000000000F8 /* SettingsPerformanceTestSession.swift in Sources */,A000000000000000000000F6 /* PerformancePolicy.swift in Sources */, A000000000000000000000F5 /* AppControlsTestSession.swift in Sources */, A000000000000000000000F2 /* SteamDisplayDrag.swift in Sources */, A000000000000000000000F1 /* SteamDisplayApplyCoordinator.swift in Sources */, A000000000000000000000EF /* LocalWallpaperDrag.swift in Sources */, A000000000000000000000ED /* DisplayTargetViews.swift in Sources */, A000000000000000000000EB /* MultiDisplayController.swift in Sources */, A000000000000000000000EA /* DisplayAssignmentStore.swift in Sources */, A000000000000000000000E9 /* DisplayRegistry.swift in Sources */, A000000000000000000000E7 /* SteamDownloadPresentation.swift in Sources */, A000000000000000000000B7 /* KineticLogo.swift in Sources */, A000000000000000000000B8 /* LaunchAnimation.swift in Sources */, A000000000000000000000B4 /* LiquidGlass.swift in Sources */, A000000000000000000000CC /* PosterView.swift in Sources */, A000000000000000000000D1 /* ContentHeader.swift in Sources */, A000000000000000000000E5 /* SteamStoreView.swift in Sources */, A000000000000000000000E4 /* SteamStoreService.swift in Sources */, A000000000000000000000E2 /* SteamHelperShared.swift in Sources */, A000000000000000000000DB /* SteamSettingsView.swift in Sources */, A000000000000000000000DA /* SteamAcquisitionService.swift in Sources */, A000000000000000000000D9 /* SteamWorkshopImporter.swift in Sources */, A000000000000000000000D8 /* SteamWorkshopPackage.swift in Sources */, A000000000000000000000D7 /* SteamCMDInstallation.swift in Sources */, A000000000000000000000D6 /* SteamCMDProcess.swift in Sources */, A000000000000000000000D5 /* SteamCMDOutput.swift in Sources */, A000000000000000000000D3 /* FloatingToolbarState.swift in Sources */, A000000000000000000000D0 /* ContentViewOptions.swift in Sources */, A000000000000000000000B2 /* RecoveryNotice.swift in Sources */, A00000000000000000000001, A00000000000000000000002, A000000000000000000000AD, A000000000000000000000AE, A000000000000000000000AF, A000000000000000000000A9, A000000000000000000000AA, A000000000000000000000AB, A000000000000000000000A6, A000000000000000000000A7, A000000000000000000000A0, A000000000000000000000A2, A000000000000000000000A3, A00000000000000000000080, A00000000000000000000081, A0000000000000000000009D, A00000000000000000000082, A00000000000000000000090, A00000000000000000000091, A00000000000000000000093, A00000000000000000000094, A00000000000000000000095, A00000000000000000000096, A00000000000000000000097, A00000000000000000000099, A0000000000000000000009A, A00000000000000000000003, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, A00000000000000000000007, A00000000000000000000008, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016, A00000000000000000000017, A00000000000000000000030, A00000000000000000000031, A00000000000000000000032, A000000000000000000000C0 /* WebRenderer.swift in Sources */, A000000000000000000000C2 /* DisplaySession.swift in Sources */, A00000000000000000000040, A00000000000000000000041, A00000000000000000000042, A000000000000000000000C3 /* DisplayRuntimeSession.swift in Sources */, A00000000000000000000043, A00000000000000000000050, A000000000000000000000C5 /* DisplayDesktopSurface.swift in Sources */, A00000000000000000000051, A000000000000000000000C6 /* SplitDisplayCrossfadeTestSession.swift in Sources */, A00000000000000000000060, A00000000000000000000061, A00000000000000000000062, A000000000000000000000CE /* LocalOrganizationStore.swift in Sources */, A00000000000000000000063, A00000000000000000000070, A00000000000000000000071, A000000000000000000000C9 /* PosterFrameSelector.swift in Sources */, A000000000000000000000CA /* FinderDropImport.swift in Sources */, A00000000000000000000072, A000000000000000000000C8 /* VideoFormats.swift in Sources */);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E00000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000009 /* CoreDomainTests.swift in Sources */, A00000000000000000000018, A00000000000000000000019, A00000000000000000000033, A00000000000000000000044, A00000000000000000000045, A00000000000000000000052, A00000000000000000000064, A00000000000000000000073, A00000000000000000000083, A00000000000000000000092, A00000000000000000000098); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000111 /* EngineAssetsTests.swift in Sources */, A000000000000000000000FC /* SceneRendererTests.swift in Sources */, A000000000000000000000F7 /* PerformanceCoreTests.swift in Sources */, A000000000000000000000F4 /* MenuBarMultiDisplayTests.swift in Sources */, A000000000000000000000F3 /* SteamDisplayApplyTests.swift in Sources */, A000000000000000000000F0 /* LocalWallpaperDragTests.swift in Sources */, A000000000000000000000EE /* DisplayTargetUITests.swift in Sources */, A000000000000000000000EC /* MultiDisplayCoreTests.swift in Sources */, A000000000000000000000E8 /* SteamDownloadUXTests.swift in Sources */, A000000000000000000000C1 /* WebRendererTests.swift in Sources */, A000000000000000000000BA /* LogoAndLaunchTests.swift in Sources */, A000000000000000000000B5 /* LiquidGlassTests.swift in Sources */, A000000000000000000000B3 /* ErrorRecoveryTests.swift in Sources */, A00000000000000000000009 /* CoreDomainTests.swift in Sources */, A00000000000000000000018, A00000000000000000000019, A00000000000000000000033, A00000000000000000000044, A00000000000000000000045, A000000000000000000000C4 /* MultiDisplayRuntimeTests.swift in Sources */, A00000000000000000000052, A000000000000000000000C7 /* PerDisplayCrossfadeTests.swift in Sources */, A00000000000000000000064, A000000000000000000000CF /* LocalOrganizationTests.swift in Sources */, A000000000000000000000D2 /* ContentOptionsTests.swift in Sources */, A000000000000000000000E6 /* SteamStoreTests.swift in Sources */, A000000000000000000000DD /* SteamWorkshopImportTests.swift in Sources */, A000000000000000000000DC /* SteamCMDTests.swift in Sources */, A000000000000000000000D4 /* FloatingToolbarTests.swift in Sources */, A00000000000000000000073, A000000000000000000000CB /* FinderDropImportTests.swift in Sources */, A000000000000000000000CD /* PosterGridTests.swift in Sources */, A00000000000000000000083, A00000000000000000000092, A00000000000000000000098, A0000000000000000000009B, A0000000000000000000009C, A0000000000000000000009E, A000000000000000000000A1 /* MenuBarPresentationTests.swift in Sources */, A000000000000000000000A4 /* SettingsStoreTests.swift in Sources */, A000000000000000000000A5 /* AppearanceTransitionTests.swift in Sources */, A000000000000000000000A8 /* SmartPauseMonitorTests.swift in Sources */, A000000000000000000000AC /* LaunchAndLoginItemTests.swift in Sources */, A000000000000000000000B1 /* OnboardingTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A000000000000000000000DF /* main.swift in Sources */, A000000000000000000000E0 /* SteamHelperService.swift in Sources */, A000000000000000000000E3 /* SteamHelperShared.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		000000000000000000000002 = {isa = PBXTargetDependency; target = D00000000000000000000001 /* Kinetic */; targetProxy = 000000000000000000000003; };
+		000000000000000000000004 = {isa = PBXTargetDependency; target = D00000000000000000000003 /* KineticSteamHelper */; targetProxy = 000000000000000000000005; };
 /* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
@@ -310,6 +557,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Kinetic/Info.plist;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks");
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kinetic.app;
@@ -330,6 +578,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Kinetic/Info.plist;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks");
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kinetic.app;
@@ -364,13 +613,54 @@
 			};
 			name = Release;
 		};
+		F00000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = KineticSteamHelper/Info.plist;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kinetic.app.SteamHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Debug;
+		};
+		F00000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = KineticSteamHelper/Info.plist;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kinetic.app.SteamHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
 		F00000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000001 /* Debug */, F00000000000000000000002 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		F00000000000000000000012 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000003 /* Debug */, F00000000000000000000004 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		F00000000000000000000013 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000005 /* Debug */, F00000000000000000000006 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F00000000000000000000014 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000007 /* Debug */, F00000000000000000000008 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
-	};
-	rootObject = 000000000000000000000001 /* Project object */;
+/* Begin XCLocalSwiftPackageReference section */
+        000000000000000000000026 /* KineticSceneRuntime */ = {isa = XCLocalSwiftPackageReference; relativePath = Packages/KineticSceneRuntime; };
+/* End XCLocalSwiftPackageReference section */
+/* Begin XCSwiftPackageProductDependency section */
+        000000000000000000000027 /* KineticSceneRuntime */ = {isa = XCSwiftPackageProductDependency; productName = KineticSceneRuntime; };
+/* End XCSwiftPackageProductDependency section */
+    };
+    rootObject = 000000000000000000000001 /* Project object */;
 }

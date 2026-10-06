@@ -5,10 +5,8 @@ enum WallpaperType: String, Codable, CaseIterable, Sendable {
 
     var supportState: WallpaperSupportState {
         switch self {
-        case .video, .web:
+        case .video, .web, .scene:
             return .supported
-        case .scene:
-            return .unsupported
         }
     }
 }

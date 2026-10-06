@@ -1,0 +1,469 @@
+#if !LITE_BUILD
+
+extension WPEMetalSceneRenderer {
+    func isCurrentSceneScriptLoad(_ token: WPESceneScriptInstanceLimitToken) -> Bool {
+        loadGeneration == token.generation && sceneScriptLoadState.isCurrent(token)
+    }
+
+    func checkCurrentSceneScriptLoad(
+        _ token: WPESceneScriptInstanceLimitToken
+    ) throws {
+        guard isCurrentSceneScriptLoad(token) else { throw CancellationError() }
+    }
+
+    func constructSceneScript<Instance>(
+        for token: WPESceneScriptInstanceLimitToken,
+        _ construct: () throws -> Instance
+    ) rethrows -> Instance? {
+        guard isCurrentSceneScriptLoad(token) else { return nil }
+        return try token.withConstructionPermission(construct)
+    }
+
+    @discardableResult
+    func latchSceneScriptFailure(
+        _ error: Error,
+        operation: WPESceneScriptOperation,
+        token: WPESceneScriptInstanceLimitToken
+    ) -> Bool {
+        let reason: WPESceneScriptFailClosedReason
+        switch error {
+        case WPESceneScriptError.executionTimedOut:
+            reason = .executionTimedOut(operation: operation)
+        case let WPESceneScriptError.capacityUnavailable(rejectedOperation):
+            reason = .capacityUnavailable(operation: rejectedOperation)
+        default:
+            return false
+        }
+        return token.failClosed(reason)
+    }
+
+    @discardableResult
+    func resetSceneScriptsToBakedIfFailed(
+        _ token: WPESceneScriptInstanceLimitToken
+    ) -> Bool {
+        guard let reason = token.failureReason else { return false }
+        clearSceneScriptRuntimeState()
+        Logger.warning(
+            "Scene \(descriptor.workshopID) kept its baked presentation and disabled SceneScript: \(reason)",
+            category: .wpeRender
+        )
+        return true
+    }
+
+    func loadDynamicOriginScripts(
+        from document: WPESceneDocument,
+        scriptLoadToken: WPESceneScriptInstanceLimitToken
+    ) {
+        dynamicOriginScriptInstances = [:]
+        dynamicScaleScriptInstances = [:]
+        dynamicAnglesScriptInstances = [:]
+        dynamicColorScriptInstances = [:]
+        sharedOriginReadFans = [:]
+        sharedScaleReadFans = [:]
+        sharedAnglesReadFans = [:]
+        sharedColorReadFans = [:]
+        transformHostLocalTransformsByID = Self.transformHostLocalTransforms(in: document)
+        layerAncestorLocalTransformsByID = Self.ancestorLocalTransforms(in: document)
+        let originScripts = document.imageObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.originScript.map { (object.id, $0) }
+        } + document.transformHostObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.originScript.map { (object.id, $0) }
+        } + document.textObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.originScript.map { (object.id, $0) }
+        }
+        var scaleScripts = document.imageObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.scaleScript.map { (object.id, $0) }
+        } + document.transformHostObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.scaleScript.map { (object.id, $0) }
+        } + document.textObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.scaleScript.map { (object.id, $0) }
+        }
+        if let motion = document.cameraMotion, let script = motion.zoomScript {
+            scaleScripts.append((WPECameraMotionPlayback.zoomScriptKey, script))
+        }
+        // Angles seeds come from scene.json in radians; the script sees degrees
+        // (same boundary as the deg→rad conversion in the per-frame tick).
+        let anglesScripts = (document.imageObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.anglesScript.map { (object.id, $0) }
+        } + document.transformHostObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.anglesScript.map { (object.id, $0) }
+        } + document.textObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.anglesScript.map { (object.id, $0) }
+        }).map { id, script in
+            (id, WPESceneTransformScript(
+                script: script.script,
+                scriptProperties: script.scriptProperties,
+                seed: script.seed * (180 / .pi)
+            ))
+        }
+        // Color scripts return a Vec3 like the transform ones, so they ride the
+        // same instance type; only the frame-side application differs.
+        let colorScripts = document.imageObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.colorScript.map { (object.id, $0) }
+        } + document.textObjects.compactMap { object -> (String, WPESceneTransformScript)? in
+            object.colorScript.map { (object.id, $0) }
+        }
+        // Keyframed origins ride the same live-transform map as the scripts, so a
+        // moving transform host composes onto its children exactly the same way.
+        dynamicOriginAnimations = Dictionary(
+            document.imageObjects.compactMap { object -> (String, WPESceneAnimatedValue)? in
+                object.originAnimation.map { (object.id, $0) }
+            } + document.transformHostObjects.compactMap { object -> (String, WPESceneAnimatedValue)? in
+                guard object.id != cameraMotionPlayback?.definition.objectID else { return nil }
+                return object.originAnimation.map { (object.id, $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        debugStage(
+            "transformScripts.load",
+            "origin=\(originScripts.count) scale=\(scaleScripts.count) angles=\(anglesScripts.count) color=\(colorScripts.count) originAnim=\(dynamicOriginAnimations.count) hosts=\(document.transformHostObjects.count)"
+        )
+        guard !originScripts.isEmpty || !scaleScripts.isEmpty
+            || !anglesScripts.isEmpty || !colorScripts.isEmpty else { return }
+        guard isCurrentSceneScriptLoad(scriptLoadToken),
+              scriptLoadToken.allows(.setup) else { return }
+        let canvasSize = SIMD2<Double>(
+            max(Double(sceneRenderSize.width), 1),
+            max(Double(sceneRenderSize.height), 1)
+        )
+        let screenSize = SIMD2<Double>(
+            max(Double(surfaceDrawableSize.width), 1),
+            max(Double(surfaceDrawableSize.height), 1)
+        )
+        let sharedState = sceneScriptSharedState
+            ?? WPESharedScriptState(sceneScriptLoadToken: scriptLoadToken)
+        sceneScriptSharedState = sharedState
+        let layerNameByID = Dictionary(
+            sharedState.layers.map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let createdBridge = WPECreatedLayerBridgeConfiguration(
+            imagePaths: Set(createdLayerTemplatesByImagePath.keys),
+            orderedLayerNames: sharedState.layers.sorted { $0.index < $1.index }.map(\.name),
+            allowsSorting: false
+        )
+        func install(
+            _ scripts: [(String, WPESceneTransformScript)],
+            into instances: inout [String: WPEDynamicTransformScriptInstance],
+            fans: inout [String: String],
+            label: String
+        ) {
+            for (objectID, script) in scripts {
+                if let key = WPESharedReadFanAnalysis.readKey(in: script.script) {
+                    fans[objectID] = key
+                    continue
+                }
+                do {
+                    guard let instance = try constructSceneScript(for: scriptLoadToken, {
+                        try WPEDynamicTransformScriptInstance(
+                            script: script.script,
+                            scriptProperties: script.scriptProperties,
+                            seed: script.seed,
+                            valueShape: objectID == WPECameraMotionPlayback.zoomScriptKey ? .scalar : .vector3,
+                            canvasSize: canvasSize,
+                            screenSize: screenSize,
+                            ownLayerName: layerNameByID[objectID],
+                            ownObjectID: objectID,
+                            createdLayerBridge: createdBridge,
+                            shared: sharedState,
+                            batchDispatcher: self.sceneScriptBatchDispatcher,
+                            initializationMode: .deferred
+                        )
+                    }) else { return }
+                    instances[objectID] = instance
+                } catch {
+                    _ = latchSceneScriptFailure(error, operation: .setup, token: scriptLoadToken)
+                    Logger.warning("Scene \(descriptor.workshopID) [\(label)] init failed for \(objectID): \(error)", category: .wpeRender)
+                }
+            }
+        }
+        install(originScripts, into: &dynamicOriginScriptInstances, fans: &sharedOriginReadFans, label: "OriginScript")
+        install(scaleScripts, into: &dynamicScaleScriptInstances, fans: &sharedScaleReadFans, label: "ScaleScript")
+        install(anglesScripts, into: &dynamicAnglesScriptInstances, fans: &sharedAnglesReadFans, label: "AnglesScript")
+        install(colorScripts, into: &dynamicColorScriptInstances, fans: &sharedColorReadFans, label: "ColorScript")
+        debugStage(
+            "transformScripts.fans",
+            "origin=\(sharedOriginReadFans.count) scale=\(sharedScaleReadFans.count) angles=\(sharedAnglesReadFans.count) color=\(sharedColorReadFans.count)"
+        )
+    }
+
+    func loadEffectConstantScripts(
+        from pipeline: WPEPreparedRenderPipeline,
+        document: WPESceneDocument,
+        scriptLoadToken: WPESceneScriptInstanceLimitToken
+    ) {
+        effectConstantScriptInstances = [:]
+        sharedEffectConstantReadFans = [:]
+        var bindings = pipeline.layers.flatMap { layer in
+            layer.passes.flatMap { prepared in
+                prepared.pass.constantScripts.map { uniform, script in
+                    (
+                        WPEEffectConstantScriptKey(passID: prepared.pass.id, uniform: uniform),
+                        script,
+                        Self.valueShape(of: prepared.pass.constants[uniform]),
+                        layer.graphLayer.objectID
+                    )
+                }
+            }
+        }
+        let drawnObjectIDs = Set(pipeline.layers.map(\.graphLayer.objectID))
+        let offscreen = Self.offscreenConstantScriptBindings(
+            in: document,
+            excludingObjectIDs: drawnObjectIDs
+        )
+        bindings += offscreen
+        debugStage(
+            "effectConstantScripts.load",
+            "count=\(bindings.count) offscreen=\(offscreen.count)"
+        )
+        guard !bindings.isEmpty,
+              isCurrentSceneScriptLoad(scriptLoadToken),
+              scriptLoadToken.allows(.setup) else { return }
+        let canvasSize = SIMD2<Double>(
+            max(Double(sceneRenderSize.width), 1),
+            max(Double(sceneRenderSize.height), 1)
+        )
+        let screenSize = SIMD2<Double>(
+            max(Double(surfaceDrawableSize.width), 1),
+            max(Double(surfaceDrawableSize.height), 1)
+        )
+        let sharedState = sceneScriptSharedState
+            ?? WPESharedScriptState(sceneScriptLoadToken: scriptLoadToken)
+        sceneScriptSharedState = sharedState
+        for (key, script, shape, objectID) in bindings {
+            if let sharedKey = WPESharedReadFanAnalysis.readKey(in: script.script) {
+                sharedEffectConstantReadFans[key] = (sharedKey, shape)
+                continue
+            }
+            do {
+                guard let instance = try constructSceneScript(for: scriptLoadToken, {
+                    try WPEDynamicTransformScriptInstance(
+                        script: script.script,
+                        scriptProperties: script.scriptProperties,
+                        seed: script.seed,
+                        valueShape: shape,
+                        canvasSize: canvasSize,
+                        screenSize: screenSize,
+                        ownLayerName: sharedState.layers.first(where: { $0.id == objectID })?.name,
+                        ownObjectID: objectID,
+                        shared: sharedState,
+                        batchDispatcher: self.sceneScriptBatchDispatcher,
+                        initializationMode: .deferred
+                    )
+                }) else { return }
+                effectConstantScriptInstances[key] = instance
+            } catch {
+                _ = latchSceneScriptFailure(error, operation: .setup, token: scriptLoadToken)
+                Logger.warning(
+                    "Scene \(descriptor.workshopID) [ConstantScript] init failed for \(key.passID).\(key.uniform): \(error)",
+                    category: .wpeRender
+                )
+            }
+        }
+        debugStage(
+            "effectConstantScripts.fans",
+            "fans=\(sharedEffectConstantReadFans.count) js=\(effectConstantScriptInstances.count)"
+        )
+    }
+
+    func loadEffectVisibilityScripts(
+        from pipeline: WPEPreparedRenderPipeline,
+        scriptLoadToken: WPESceneScriptInstanceLimitToken
+    ) {
+        effectVisibilityScriptInstances = [:]
+        liveEffectVisibility = [:]
+        var gatesByID: [String: WPEPassVisibilityGate] = [:]
+        var ownerIDsByGate: [String: String] = [:]
+        for layer in pipeline.layers {
+            for prepared in layer.passes {
+                guard let gate = prepared.pass.visibilityGate else { continue }
+                gatesByID[gate.id] = gate
+                ownerIDsByGate[gate.id] = layer.graphLayer.objectID
+            }
+        }
+        debugStage("effectVisibilityScripts.load", "count=\(gatesByID.count)")
+        guard !gatesByID.isEmpty else { return }
+        for (id, gate) in gatesByID {
+            liveEffectVisibility[id] = gate.initialVisible
+        }
+        guard isCurrentSceneScriptLoad(scriptLoadToken),
+              scriptLoadToken.allows(.setup) else { return }
+        let canvasSize = SIMD2<Double>(
+            max(Double(sceneRenderSize.width), 1),
+            max(Double(sceneRenderSize.height), 1)
+        )
+        let screenSize = SIMD2<Double>(
+            max(Double(surfaceDrawableSize.width), 1),
+            max(Double(surfaceDrawableSize.height), 1)
+        )
+        let sharedState = sceneScriptSharedState
+            ?? WPESharedScriptState(sceneScriptLoadToken: scriptLoadToken)
+        sceneScriptSharedState = sharedState
+        for (id, gate) in gatesByID.sorted(by: { $0.key < $1.key }) {
+            do {
+                guard let instance = try constructSceneScript(for: scriptLoadToken, {
+                    try WPEDynamicTransformScriptInstance(
+                        script: gate.script.script,
+                        scriptProperties: gate.script.scriptProperties,
+                        seed: gate.script.seed,
+                        valueShape: .boolean,
+                        canvasSize: canvasSize,
+                        screenSize: screenSize,
+                        ownLayerName: sharedState.layers.first(where: { $0.id == ownerIDsByGate[id] })?.name,
+                        ownObjectID: ownerIDsByGate[id],
+                        shared: sharedState,
+                        batchDispatcher: self.sceneScriptBatchDispatcher,
+                        initializationMode: .deferred
+                    )
+                }) else { return }
+                effectVisibilityScriptInstances[id] = instance
+            } catch {
+                _ = latchSceneScriptFailure(error, operation: .setup, token: scriptLoadToken)
+                Logger.warning(
+                    "Scene \(descriptor.workshopID) [EffectVisibilityScript] init failed: \(error)",
+                    category: .wpeRender
+                )
+            }
+        }
+    }
+
+    /// Local transforms of the non-drawn group nodes. Particle host offsets read
+    /// this map, so it stays exactly the transform-host set.
+    nonisolated static func transformHostLocalTransforms(
+        in document: WPESceneDocument
+    ) -> [String: WPERenderObjectTransform] {
+        Dictionary(
+            document.transformHostObjects.map { object in
+                (
+                    object.id,
+                    WPERenderObjectTransform(
+                        origin: object.localOrigin,
+                        scale: object.localScale,
+                        angles: object.localAngles
+                    )
+                )
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// Image objects are in here because an alpha-0 container stays out of the graph while WPE still composes children through it — a parent the walk cannot resolve would fall back to the child's LOCAL transform, dropping the ancestor chain.
+    nonisolated static func ancestorLocalTransforms(
+        in document: WPESceneDocument
+    ) -> [String: WPERenderObjectTransform] {
+        var result = Dictionary(
+            document.imageObjects.map { object in
+                (
+                    object.id,
+                    WPERenderObjectTransform(
+                        origin: object.localOrigin,
+                        scale: object.localScale,
+                        angles: object.localAngles
+                    )
+                )
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        result.merge(transformHostLocalTransforms(in: document)) { _, host in host }
+        return result
+    }
+
+    /// A script is scene semantics: WPE keeps a hidden object ticking. Collecting bindings from the pipeline alone would miss the producer, so every consumer would read an unset key.
+    nonisolated static func offscreenConstantScriptBindings(
+        in document: WPESceneDocument,
+        excludingObjectIDs drawn: Set<String>
+    ) -> [(WPEEffectConstantScriptKey, WPESceneTransformScript, WPEScriptValueShape, String)] {
+        document.imageObjects.filter { !drawn.contains($0.id) }.flatMap { object in
+            object.effects.enumerated().flatMap { effectIndex, effect in
+                effect.passOverrides.enumerated().flatMap { passIndex, override in
+                    override.constantScripts.map { uniform, script in
+                        (
+                            WPEEffectConstantScriptKey(
+                                passID: "offscreen.\(object.id).\(effectIndex).\(passIndex)",
+                                uniform: uniform
+                            ),
+                            script,
+                            WPEScriptValueShape.scalar,
+                            object.id
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// WPE hands a scalar property a bare Number and a vector one a Vec2/Vec3;
+    /// the authored constant is the only record of which this uniform is.
+    static func valueShape(of constant: WPESceneShaderConstantValue?) -> WPEScriptValueShape {
+        switch constant {
+        case let .vector(values) where values.count >= 3: .vector3
+        case let .vector(values) where values.count == 2: .vector2
+        default: .scalar
+        }
+    }
+
+    func clearSceneScriptRuntimeState() {
+        invalidateIntroPhaseAlign()
+        destroySceneScriptInstances()
+        // A leaked subscription outlives the wallpaper: the monitor holds the handler, which holds this scene's mailbox, and every track change would keep posting into a scene nobody renders.
+        if let dispatcher = mediaEventDispatcher {
+            mediaEventDispatcher = nil
+            Task { @MainActor in dispatcher.stop() }
+        }
+        mediaEventMailbox = nil
+        if let subscription = mediaTextureSubscription {
+            mediaTextureSubscription = nil
+            Task { @MainActor in subscription.stop() }
+        }
+        executor.mediaTextureStore = nil
+        #if DEBUG
+        oracleMediaInputReceipt = nil
+        #endif
+        textScriptInstances.removeAll(keepingCapacity: false)
+        layerScriptInstances.removeAll(keepingCapacity: false)
+        orderedLayerScriptBatch = nil
+        pendingOrderedLayerScriptBatch = nil
+        committedAuthoredLayerOrder = nil
+        pendingOrderedLayerResize = nil
+        pendingOrderedLayerProperties.removeAll()
+        layerTransformMutationJournal.removeAll()
+        layerAlphaScriptInstances.removeAll(keepingCapacity: false)
+        textVisibleScriptInstances.removeAll(keepingCapacity: false)
+        textAlphaScriptInstances.removeAll(keepingCapacity: false)
+        particleAlphaScriptInstances.removeAll(keepingCapacity: false)
+        liveParticleInstanceAlpha.removeAll(keepingCapacity: false)
+        dynamicOriginAnimations.removeAll(keepingCapacity: false)
+        dynamicOriginScriptInstances.removeAll(keepingCapacity: false)
+        dynamicScaleScriptInstances.removeAll(keepingCapacity: false)
+        dynamicAnglesScriptInstances.removeAll(keepingCapacity: false)
+        dynamicColorScriptInstances.removeAll(keepingCapacity: false)
+        sharedOriginReadFans.removeAll(keepingCapacity: false)
+        sharedScaleReadFans.removeAll(keepingCapacity: false)
+        sharedAnglesReadFans.removeAll(keepingCapacity: false)
+        sharedColorReadFans.removeAll(keepingCapacity: false)
+        sharedEffectConstantReadFans.removeAll(keepingCapacity: false)
+        effectConstantScriptInstances.removeAll(keepingCapacity: false)
+        effectVisibilityScriptInstances.removeAll(keepingCapacity: false)
+        liveEffectConstants.removeAll(keepingCapacity: false)
+        liveEffectVisibility.removeAll(keepingCapacity: false)
+        sceneScriptSharedState = nil
+        lastStableScriptTransforms = LiveScriptTransforms()
+        lastStableScriptTextByID.removeAll(keepingCapacity: false)
+        layerHoverStates.removeAll(keepingCapacity: false)
+        layerPressStates.removeAll(keepingCapacity: false)
+        lastHoverPointerPixels = nil
+        liveLayerVisibility.removeAll(keepingCapacity: false)
+        liveTextVisibility.removeAll(keepingCapacity: false)
+        liveLayerAlpha.removeAll(keepingCapacity: false)
+        liveTextAlpha.removeAll(keepingCapacity: false)
+        liveScriptAssignedText.removeAll(keepingCapacity: false)
+        liveCreatedLayers.removeAll(keepingCapacity: false)
+        liveLayerPresentation.removeAll(keepingCapacity: false)
+        layerVideoSourceKey.removeAll(keepingCapacity: false)
+        layerObjectIDByName.removeAll(keepingCapacity: false)
+        sceneScriptVideoCommandBuffer.discard()
+        sceneScriptIntroPhaseAlignPending = false
+        sceneScriptGeneralSettings.resetGeneration()
+    }
+}
+#endif

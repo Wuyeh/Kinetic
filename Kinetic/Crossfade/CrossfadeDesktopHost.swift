@@ -1,6 +1,6 @@
 import AppKit
 
-/// 桌面窗口内的固定舞台。最底层始终是完全不透明的当前壁纸，
+/// Module 6：桌面窗口内的固定舞台。最底层始终是完全不透明的当前壁纸，
 /// 新壁纸只在其上方淡入；舞台本身透明，不绘制任何黑色背景。
 @MainActor
 final class CrossfadeStageView: NSView {
@@ -58,13 +58,15 @@ final class CrossfadeStageView: NSView {
     }
 }
 
-/// Crossfade Engine。
-/// 包装桌面窗口：A 保持完全显示，B 首帧就绪后在 A 上方淡入，
+/// Module 6 — Crossfade Engine。
+/// 包装 Module 2 的桌面窗口：A 保持完全显示，B 首帧就绪后在 A 上方淡入，
 /// 淡入完成后先把 A 移出窗口，再通知调用方释放 A。任何时刻底层都有完整画面，不出现黑帧。
 /// 不决定播放状态，不创建或释放 Renderer；这些仍由 WallpaperRuntimeManager 负责。
+/// 1.0：每台显示器一个实例（见 `DisplayDesktopSurface`），不能在显示器之间共用；
+/// 一台显示器上的新淡入只会提前完成这台显示器自己尚未结束的淡入。
 @MainActor
 final class CrossfadeDesktopHost: DesktopContentHost {
-    /// 交叉淡化时长（300–400ms）。
+    /// Master Spec §48：300–400ms。
     nonisolated static let standardDuration: TimeInterval = 0.35
 
     let duration: TimeInterval

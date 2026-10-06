@@ -1,0 +1,1 @@
+uniform float g_Time; void main(){float pulse=0.82+0.18*sin(g_Time);gl_FragColor=vec4(vec3(0.12,0.5,0.82)*pulse,1.0);}

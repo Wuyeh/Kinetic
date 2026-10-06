@@ -5,7 +5,7 @@ private typealias Tokens = MainWindowDesignTokens
 
 // MARK: - Card Visual State
 
-/// 卡片外观状态。只负责边框 / 光晕 / 选中 / 悬停操作 / Active 与 Unsupported 标记，
+/// Module 11：卡片外观状态。只负责边框 / 光晕 / 选中 / 悬停操作 / Active 与 Unsupported 标记，
 /// 不描述预览区域显示什么内容，也不触发任何 Runtime 操作。
 struct WallpaperCardVisualState: Equatable {
     var isActive: Bool
@@ -58,7 +58,7 @@ struct WallpaperCardVisualState: Equatable {
 
 /// 资料库中的一张壁纸卡片：Preview Area、名称、Metadata。
 /// 悬停只是界面交互：卡片外观立即进入 Hover；是否以及何时在预览区域内播放 Live Preview
-/// 由 `WallpaperPreviewCoordinator` 单独决定。两者都不调用 Desktop Runtime、
+/// 由 `WallpaperPreviewCoordinator` 单独决定（Module 11.1）。两者都不调用 Desktop Runtime、
 /// 不应用壁纸、不改变播放状态。
 @MainActor
 struct WallpaperCard: View {
@@ -67,8 +67,14 @@ struct WallpaperCard: View {
     let isActive: Bool
     let onSelect: () -> Void
     let onApply: () -> Void
+    let onContextMenu: (NSView) -> NSMenu
+    /// 长按后拖向窗口顶部的显示器目标；与单击、双击及「应用」按钮并存。
+    var onDisplayDrag: ((CardDisplayDragEvent) -> Void)? = nil
 
     @State private var isHovered = false
+    @State private var isDragging = false
+    @GestureState private var holdRecognized = false
+    @StateObject private var dragCoordinates = WindowDragCoordinates()
     @ObservedObject private var previewCoordinator = WallpaperPreviewCoordinator.shared
 
     var body: some View {
@@ -80,8 +86,9 @@ struct WallpaperCard: View {
                 isHovered: isHovered,
                 isPlayable: WallpaperCardVisualState.isPlayable(wallpaper)
             ),
-            onSelect: onSelect,
+            onSelect: { if !isDragging { onSelect() } },
             onApply: {
+                guard !isDragging else { return }
                 // 先结束本卡片的预览会话，再走原有 Apply 流程；预览不会升级为桌面播放。
                 previewCoordinator.stopAll()
                 onApply()
@@ -89,19 +96,107 @@ struct WallpaperCard: View {
             livePreview: previewCoordinator.preview(for: wallpaper.id),
             onPreviewInterrupted: { previewCoordinator.previewInterrupted($0) }
         )
+        .background { WindowDragCoordinateProbe(reference: dragCoordinates) }
+        .overlay { WallpaperSecondaryClickSurface(menuProvider: onContextMenu) }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: Tokens.LocalDrag.holdDuration)
+                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+                .updating($holdRecognized) { phase, recognized, _ in
+                    if case .second(true, _?) = phase { recognized = true }
+                }
+                .onChanged { phase in
+                    guard let onDisplayDrag else { return }
+                    if case .second(true, let drag?) = phase {
+                        if !isDragging {
+                            isDragging = true
+                            previewCoordinator.stopAll()
+                            onDisplayDrag(.began)
+                        }
+                        if let point = dragCoordinates.windowPoint(forLocalPoint: drag.location) {
+                            onDisplayDrag(.moved(point))
+                        }
+                    }
+                }
+                .onEnded { phase in
+                    guard isDragging, let onDisplayDrag else { return }
+                    isDragging = false
+                    if case .second(true, let drag?) = phase,
+                       let point = dragCoordinates.windowPoint(forLocalPoint: drag.location) {
+                        onDisplayDrag(.ended(point))
+                    } else {
+                        onDisplayDrag(.cancelled)
+                    }
+                }
+        )
+        .onChange(of: holdRecognized) { recognized in
+            // 手势被系统取消时 onEnded 不保证执行；不能留下目标条或旧 Hover。
+            if !recognized, isDragging {
+                isDragging = false
+                onDisplayDrag?(.cancelled)
+            }
+        }
         .onHover { hovering in
             isHovered = hovering
-            if hovering {
+            if hovering, !isDragging {
                 previewCoordinator.hoverBegan(wallpaper)
             } else {
                 previewCoordinator.hoverEnded(wallpaper.id)
             }
         }
         .onDisappear {
+            if isDragging { isDragging = false; onDisplayDrag?(.cancelled) }
             isHovered = false
             previewCoordinator.hoverEnded(wallpaper.id)
         }
     }
+}
+
+enum CardDisplayDragEvent {
+    case began
+    case moved(CGPoint)
+    case ended(CGPoint)
+    case cancelled
+}
+
+/// 辅助点按在鼠标原位弹出系统菜单；普通鼠标移动、单击、双击和按钮点击交给 SwiftUI 卡片。
+private struct WallpaperSecondaryClickSurface: NSViewRepresentable {
+    let menuProvider: (NSView) -> NSMenu
+
+    func makeNSView(context: Context) -> SecondaryClickView { SecondaryClickView() }
+
+    func updateNSView(_ nsView: SecondaryClickView, context: Context) {
+        nsView.menuProvider = menuProvider
+    }
+
+    final class SecondaryClickView: NSView {
+        var menuProvider: ((NSView) -> NSMenu)?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard NSApp.currentEvent?.type == .rightMouseDown else { return nil }
+            return super.hitTest(point)
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            guard let menu = menuProvider?(self) else { return }
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
+    }
+}
+
+/// NSMenuItem 自己持有操作，避免右键菜单关闭前动作目标被释放。
+final class WallpaperMenuActionItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, action handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(performAction), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func performAction() { handler() }
 }
 
 /// 无内部状态的卡片布局：外观完全由 visualState 决定，便于逐状态验证。
@@ -126,7 +221,7 @@ struct WallpaperCardContent: View {
                 .overlay(alignment: .bottomTrailing) {
                     WallpaperCardAccessoryView(accessory: visualState.accessory, onApply: applyIfAllowed)
                 }
-                .background { WallpaperCardGlow(isVisible: visualState.emphasis == .activeGlow) }
+                .background { WallpaperCardGlow(emphasis: visualState.emphasis) }
 
             // 预览与文字之间的间隙沿用卡片的单击 / 双击行为。
             Color.clear
@@ -163,9 +258,10 @@ struct WallpaperCardContent: View {
 
 // MARK: - Preview Area
 
-/// 卡片的预览区域：尺寸由区域自身决定（固定宽高比、圆角、裁切），
+/// 卡片的预览区域：1.0 Module 11 起是 1:1 连续圆角正方形 Poster（`PosterView`）。尺寸只由宽度决定，
 /// 内容只填充这个区域，不能改变卡片的宽度、高度或网格位置。
-/// 静态缩略图始终在最下层；Live Preview 就绪后才在其上方淡入，失败或离开时直接露出缩略图。
+/// Poster 始终在最下层；Live Preview 就绪后才在其上方淡入（保持原比例，四周露出 Poster 的模糊背景），
+/// 失败或离开时直接露出 Poster。
 @MainActor
 struct WallpaperCardPreview: View {
     let wallpaper: Wallpaper
@@ -174,65 +270,31 @@ struct WallpaperCardPreview: View {
 
     var body: some View {
         Color.clear
-            .aspectRatio(Tokens.Grid.previewAspectRatio, contentMode: .fit)
-            .overlay { StaticThumbnailView(wallpaper: wallpaper) }
+            .aspectRatio(PosterGeometry.aspectRatio, contentMode: .fit)
+            .overlay { PosterArtworkView(wallpaper: wallpaper) }
             .overlay {
                 if let livePreview {
-                    LivePreviewLayer(
-                        preview: livePreview,
-                        cornerRadius: Tokens.Radius.preview,
-                        onInterrupted: onPreviewInterrupted
-                    )
+                    GeometryReader { proxy in
+                        LivePreviewLayer(
+                            preview: livePreview,
+                            cornerRadius: PosterGeometry.cornerRadius(forSide: proxy.size.width),
+                            onInterrupted: onPreviewInterrupted
+                        )
+                    }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.preview, style: .continuous))
-    }
-}
-
-/// 预览区域的静态内容：导入时生成的缩略图；没有缩略图时显示占位图形。
-@MainActor
-struct StaticThumbnailView: View {
-    let wallpaper: Wallpaper
-
-    var body: some View {
-        if let url = wallpaper.thumbnailURL,
-           let image = ThumbnailImageCache.shared.image(for: url) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-        } else {
-            ZStack {
-                Color(nsColor: .controlBackgroundColor)
-                Image(systemName: wallpaper.type == .video ? "play.rectangle" : "photo")
-                    .font(.system(size: Tokens.Spacing.large, weight: .ultraLight))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-/// 缩略图只从磁盘读取一次；悬停、选中等外观变化不会重复读取文件。
-@MainActor
-final class ThumbnailImageCache {
-    static let shared = ThumbnailImageCache()
-    private let cache = NSCache<NSURL, NSImage>()
-
-    func image(for url: URL) -> NSImage? {
-        if let cached = cache.object(forKey: url as NSURL) { return cached }
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        cache.setObject(image, forKey: url as NSURL)
-        return image
+            .clipShape(PosterShape())
     }
 }
 
 // MARK: - Card Overlay
 
 /// Selected 的轻量边框与 Active 的边框；不接收点击。
-private struct WallpaperCardEmphasisLayer: View {
+struct WallpaperCardEmphasisLayer: View {
     let emphasis: WallpaperCardVisualState.Emphasis
 
     var body: some View {
-        RoundedRectangle(cornerRadius: Tokens.Radius.preview, style: .continuous)
+        PosterShape()
             .strokeBorder(Tokens.accent.opacity(strokeOpacity), lineWidth: lineWidth)
             .allowsHitTesting(false)
     }
@@ -240,23 +302,45 @@ private struct WallpaperCardEmphasisLayer: View {
     private var strokeOpacity: Double {
         switch emphasis {
         case .none: return 0
-        case .selection: return 0.45
+        case .selection: return 0.8
         case .activeGlow: return 0.75
         }
     }
 
-    private var lineWidth: CGFloat { emphasis == .activeGlow ? 2 : 1 }
+    private var lineWidth: CGFloat {
+        switch emphasis {
+        case .none: return 1
+        case .selection: return 3.75
+        case .activeGlow: return 2
+        }
+    }
 }
 
-/// Active 的柔和光晕，位于预览区域后方，不影响布局。
-private struct WallpaperCardGlow: View {
-    let isVisible: Bool
+/// 选中与运行中的柔和光晕，位于预览区域后方，不影响布局；运行态仍优先。
+struct WallpaperCardGlow: View {
+    let emphasis: WallpaperCardVisualState.Emphasis
 
     var body: some View {
-        RoundedRectangle(cornerRadius: Tokens.Radius.preview, style: .continuous)
-            .fill(Tokens.accent.opacity(isVisible ? 0.35 : 0))
-            .shadow(color: Tokens.accent.opacity(isVisible ? 0.45 : 0), radius: Tokens.Spacing.compact)
+        PosterShape()
+            .fill(Tokens.accent.opacity(fillOpacity))
+            .shadow(color: Tokens.accent.opacity(shadowOpacity), radius: Tokens.Spacing.compact)
             .allowsHitTesting(false)
+    }
+
+    private var fillOpacity: Double {
+        switch emphasis {
+        case .none: return 0
+        case .selection: return 0.24
+        case .activeGlow: return 0.35
+        }
+    }
+
+    private var shadowOpacity: Double {
+        switch emphasis {
+        case .none: return 0
+        case .selection: return 0.38
+        case .activeGlow: return 0.45
+        }
     }
 }
 
@@ -270,15 +354,18 @@ private struct WallpaperCardAccessoryView: View {
         case .none:
             EmptyView()
         case .applyButton:
+            // 规格：「应用」是 Liquid Glass 按钮，尺寸适中。普通无色玻璃（用户要求，见 `kineticGlassButton`）。
             Button(action: onApply) {
-                pill("shell.tile.apply", font: Tokens.Typography.metadata)
-                    .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.small, style: .continuous))
+                Text("shell.tile.apply")
+                    .font(Tokens.Typography.metadata)
+                    .foregroundStyle(.primary)
             }
-            .buttonStyle(.plain)
+            .kineticGlassButton()
+            .controlSize(.small)
             .padding(Tokens.Spacing.small)
             .transition(.opacity)
         case .activeBadge:
-            pill("shell.tile.active", font: Tokens.Typography.badge)
+            pill("shell.tile.active", font: Tokens.Typography.badge, tint: Tokens.accent.opacity(0.35))
                 .padding(Tokens.Spacing.small)
                 .allowsHitTesting(false)
         case .unsupportedBadge:
@@ -290,12 +377,12 @@ private struct WallpaperCardAccessoryView: View {
         }
     }
 
-    private func pill(_ key: LocalizedStringKey, font: Font) -> some View {
+    private func pill(_ key: LocalizedStringKey, font: Font, tint: Color? = nil) -> some View {
         Text(key)
             .font(font)
             .padding(.horizontal, Tokens.Spacing.compact)
-            .padding(.vertical, Tokens.Spacing.small)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Tokens.Radius.small, style: .continuous))
+            .padding(.vertical, Tokens.Spacing.small - 2)
+            .kineticGlass(in: Capsule(), tint: tint)
     }
 }
 

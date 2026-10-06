@@ -1,7 +1,7 @@
 import AppKit
 
-/// Runtime 与具体渲染器之间唯一的抽象。
-/// 各类渲染器都通过它接入；
+/// Module 5：Runtime 与具体渲染器之间唯一的抽象。
+/// VideoRenderer、WebRenderer 和未来的独立 SceneRenderer 都通过它接入；
 /// Runtime 不依赖任何具体渲染技术。一个实例只服务一张 Wallpaper，dispose 后不可重用。
 @MainActor
 protocol WallpaperRenderer: AnyObject {
@@ -21,21 +21,21 @@ protocol WallpaperRenderer: AnyObject {
     func dispose()
 }
 
-/// Runtime 需要的桌面层能力；由 DesktopWindowRuntime 提供。
+/// Runtime 需要的桌面层能力；由 Module 2 的 DesktopWindowRuntime 提供。
 @MainActor
 protocol DesktopContentHost: AnyObject {
     @discardableResult
     func present(_ contentView: NSView) -> Bool
     /// 移除桌面窗口及其内容，露出用户原本的 macOS 壁纸。必须幂等。
     func stop()
-    /// 旧内容保持显示，新内容就位后调用 completion；调用方在 completion 中释放旧 Renderer。
+    /// Module 6：旧内容保持显示，新内容就位后调用 completion；调用方在 completion 中释放旧 Renderer。
     @discardableResult
     func transition(to contentView: NSView, completion: @escaping @MainActor () -> Void) -> Bool
 }
 
 extension DesktopContentHost {
-    /// 默认硬切：先显示新内容，再立即通知释放旧内容。
-    /// 交叉淡化由 CrossfadeDesktopHost 提供。
+    /// 默认硬切（Module 5 行为）：先显示新内容，再立即通知释放旧内容。
+    /// Crossfade 由 Module 6 的 CrossfadeDesktopHost 提供。
     @discardableResult
     func transition(to contentView: NSView, completion: @escaping @MainActor () -> Void) -> Bool {
         let shown = present(contentView)
@@ -44,10 +44,10 @@ extension DesktopContentHost {
     }
 }
 
-/// 仅做接口适配，不改变 VideoRenderer 的行为。
+/// 仅做接口适配，不改变 Module 3 的行为。
 extension VideoRenderer: WallpaperRenderer {
     var displayView: NSView { contentView }
 }
 
-/// 仅做接口适配，不改变 DesktopWindowRuntime 的行为。
+/// 仅做接口适配，不改变 Module 2 的行为。
 extension DesktopWindowRuntime: DesktopContentHost {}

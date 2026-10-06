@@ -1,0 +1,94 @@
+import Foundation
+
+public enum WPEPathSafety {
+    public static func isSafePathComponent(_ value: String) -> Bool {
+        !value.isEmpty
+            && !value.contains("\0")
+            && value != "."
+            && value != ".."
+            && !value.contains("/")
+            && !value.contains("\\")
+    }
+
+    /// Only the path-component check, not "is a Steam id" — `SteamLibraryPaths.isSafeWorkshopID`
+    /// (digits only) is the gate for anything that touches the Steam library.
+    public static func isSafeProjectID(_ value: String) -> Bool {
+        isSafePathComponent(value)
+    }
+
+    public static func isSafeRelativePath(_ value: String) -> Bool {
+        !value.isEmpty
+            && !value.contains("\0")
+            && !value.hasPrefix("/")
+            && !value.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "/" || $0 == "\\" }).contains("..")
+            && value != "."
+    }
+
+    public static func isStrictSafeRelativePath(_ value: String) -> Bool {
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        return !value.isEmpty
+            && !value.contains("\0")
+            && !value.hasPrefix("/")
+            && !value.contains("\\")
+            && !components.contains("..")
+            && !components.contains(".")
+            && !components.contains("")
+    }
+
+    public static func isSafeCacheRelativePath(_ path: String) -> Bool {
+        path.hasPrefix("wpe-cache/")
+            && !path.contains("\0")
+            && !path.contains("\\")
+            && !path.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+            && !path.contains("//")
+    }
+
+    public static func contains(_ child: URL, in parent: URL) -> Bool {
+        let childPath = normalizedPath(child.path(percentEncoded: false))
+        let parentPath = normalizedPath(parent.path(percentEncoded: false))
+        return childPath == parentPath || childPath.hasPrefix(parentPath + "/")
+    }
+
+    public static func resourceURL(root: URL, relativePath: String) -> URL? {
+        guard isSafeRelativePath(relativePath) else { return nil }
+        return containedResourceURL(root: root, relativePath: relativePath)
+    }
+
+    public static func strictResourceURL(root: URL, relativePath: String) -> URL? {
+        guard isStrictSafeRelativePath(relativePath) else { return nil }
+        return containedResourceURL(root: root, relativePath: relativePath)
+    }
+
+    private static func containedResourceURL(root: URL, relativePath: String) -> URL? {
+        let rootURL = root.standardizedFileURL.resolvingSymlinksInPath()
+        // Resolving a whole nonexistent path can leave existing parent links unresolved.
+        var url = rootURL
+        for component in relativePath.split(separator: "/") {
+            url = url.appendingPathComponent(String(component))
+                .standardizedFileURL.resolvingSymlinksInPath()
+            guard contains(url, in: rootURL) else { return nil }
+        }
+        return url
+    }
+
+    public static func defaultApplicationSupportRoot(fileManager: FileManager) -> URL? {
+        if let applicationSupport = try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) {
+            return applicationSupport.appendingPathComponent("LiveWallpaper", isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/LiveWallpaper", isDirectory: true)
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        var normalized = path
+        while normalized.count > 1, normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+}

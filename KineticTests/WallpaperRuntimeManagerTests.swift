@@ -28,7 +28,7 @@ private final class FakeDesktop: DesktopContentHost {
     }
 }
 
-/// 可控的 Renderer：准备结果由测试决定，用于证明任何 Renderer（Video/Web/Scene）遵循同一规则。
+/// 可控的 Renderer：准备结果由测试决定，用于证明任何 Renderer（Video/Web/未来 Scene）遵循同一规则。
 @MainActor
 private final class FakeRenderer: WallpaperRenderer {
     let wallpaper: Wallpaper
@@ -106,6 +106,44 @@ final class WallpaperRuntimeManagerTests: XCTestCase {
     private func wallpaper(_ name: String, _ type: WallpaperType = .video) -> Wallpaper {
         Wallpaper(name: name, type: type, source: .local,
                   resourceURL: URL(fileURLWithPath: "/kinetic-runtime-fixtures/\(name)"))
+    }
+
+    @MainActor
+    func testAudioSwitchUpdatesActiveRendererAndFollowsWallpaperSwitchAndReenable() async throws {
+        let (manager, _, log, renderers) = makeManager()
+        let a = wallpaper("A"), b = wallpaper("B")
+        XCTAssertFalse(manager.isAudioEnabled)
+
+        manager.apply(a)
+        try await waitUntil { renderers().first?.isWaitingForPreparation == true }
+        renderers()[0].finishPreparation()
+        try await waitUntil { manager.state.playbackState == .playing }
+
+        log.entries.removeAll()
+        manager.setAudioEnabled(true)
+        XCTAssertTrue(manager.isAudioEnabled)
+        XCTAssertEqual(log.entries, ["mute:A#1:false"])
+
+        manager.pause()
+        manager.apply(b)
+        try await waitUntil { renderers().count == 2 && renderers()[1].isWaitingForPreparation }
+        renderers()[1].finishPreparation()
+        try await waitUntil { manager.state.activeWallpaperID == b.id }
+        XCTAssertTrue(log.entries.contains("mute:B#2:false"), "New renderer inherits enabled audio")
+        XCTAssertTrue(log.entries.contains("mute:A#1:true"), "Outgoing renderer is silenced")
+
+        log.entries.removeAll()
+        manager.setAudioEnabled(false)
+        XCTAssertFalse(manager.isAudioEnabled)
+        XCTAssertEqual(log.entries, ["mute:B#2:true"])
+
+        manager.stop()
+        manager.reenable()
+        try await waitUntil { renderers().count == 3 && renderers()[2].isWaitingForPreparation }
+        renderers()[2].finishPreparation()
+        try await waitUntil { manager.state.activeWallpaperID == b.id && manager.state.playbackState == .playing }
+        XCTAssertFalse(log.entries.contains("mute:B#3:false"), "Re-enabled wallpaper keeps default mute")
+        manager.shutdown()
     }
 
     @MainActor
@@ -229,22 +267,22 @@ final class WallpaperRuntimeManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testUnsupportedOrUnavailableTypesAreRejectedWithoutChangingState() async throws {
+    func testSceneAndWebUseIndependentRenderers() async throws {
         let (manager, desktop, _, renderers) = makeManager()
         manager.apply(wallpaper("场景", .scene))
-        XCTAssertEqual(manager.state, WallpaperRuntimeState())
-        XCTAssertTrue(renderers().isEmpty)
-        XCTAssertEqual(manager.lastFailure?.detail, "当前版本暂不支持此类型。")
-        XCTAssertNil(desktop.content)
+        XCTAssertEqual(renderers().count, 1)
+        XCTAssertNil(manager.lastFailure)
+        try await waitUntil { renderers()[0].isWaitingForPreparation }
+        renderers()[0].finishPreparation()
+        try await waitUntil { manager.state.playbackState == .playing }
+        XCTAssertTrue(desktop.content === renderers()[0].displayView)
 
-        // 默认工厂：Web 暂不可用，Scene 不支持。
-        XCTAssertThrowsError(try WallpaperRuntimeManager.standardRenderer(for: wallpaper("网页", .web))) {
-            XCTAssertEqual($0 as? WallpaperRuntimeError, .rendererUnavailable)
-        }
-        XCTAssertThrowsError(try WallpaperRuntimeManager.standardRenderer(for: wallpaper("场景", .scene))) {
-            XCTAssertEqual($0 as? WallpaperRuntimeError, .unsupportedType)
-        }
+        let webRenderer = try XCTUnwrap(WallpaperRuntimeManager.standardRenderer(for: wallpaper("网页", .web)) as? WebRenderer)
+        webRenderer.dispose()
+        let sceneRenderer = try XCTUnwrap(WallpaperRuntimeManager.standardRenderer(for: wallpaper("场景", .scene)) as? SceneRenderer)
+        sceneRenderer.dispose()
         XCTAssertTrue(try WallpaperRuntimeManager.standardRenderer(for: wallpaper("视频")) is VideoRenderer)
+        manager.shutdown()
     }
 
     @MainActor

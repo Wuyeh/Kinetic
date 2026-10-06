@@ -1,9 +1,10 @@
 import AppKit
 import CryptoKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import Kinetic
 
-/// 本地导入。临时目录模拟用户的“下载”文件夹与 Kinetic 的 Library Storage，不接触正式资料库。
+/// Module 8：本地导入。临时目录模拟用户的“下载”文件夹与 Kinetic 的 Library Storage，不接触正式资料库。
 final class LocalImportServiceTests: XCTestCase {
     private var workspace: URL!
     private var downloads: URL!
@@ -51,6 +52,96 @@ final class LocalImportServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testSceneFolderCopyImportAndActualRendererPreparation() async throws {
+        let projects = try SceneAcceptanceFixtures.create(in: downloads)
+        let before = try digest(projects.warm)
+        let project = projects.warm.appendingPathComponent("project.json")
+        try JSONSerialization.data(withJSONObject: ["type": "scene", "file": "scene.json", "title": "实时场景"]).write(to: project)
+        let updated = try digest(projects.warm)
+        XCTAssertNotEqual(before, updated)
+        let library = WallpaperLibrary(storage: storage)
+        let importer = LocalImportService(library: library)
+        let outcome = await importer.importItem(at: projects.warm)
+        let wallpaper = try XCTUnwrap(outcome.wallpaper, "\(outcome.result)")
+        XCTAssertEqual(wallpaper.type, .scene); XCTAssertEqual(wallpaper.name, "实时场景")
+        XCTAssertEqual(wallpaper.acquisitionOrigin, .localImport)
+        XCTAssertEqual(try digest(projects.warm), updated)
+        XCTAssertTrue(outcome.sourceUnchanged)
+        XCTAssertEqual(try digest(wallpaper.resourceURL), updated)
+        XCTAssertEqual(WallpaperLibrary(storage: storage).wallpapers, [wallpaper])
+        let renderer = SceneRenderer(wallpaper: wallpaper, engineAssets: nil)
+        defer { renderer.dispose() }
+        try await renderer.prepare()
+        XCTAssertTrue(renderer.scene.isPrepared); XCTAssertFalse(renderer.scene.isPlaying)
+    }
+
+    @MainActor
+    func testSceneManifestTakesPriorityOverIncidentalWebEntry() throws {
+        let projects = try SceneAcceptanceFixtures.create(in: downloads)
+        try Data("<html></html>".utf8).write(to: projects.cool.appendingPathComponent("index.html"))
+        XCTAssertEqual(try LocalImportService.classify(projects.cool), .sceneFolder)
+        XCTAssertEqual(FinderDropEvaluation.evaluate([projects.cool]), .importable(count: 1))
+    }
+
+    @MainActor
+    func testMalformedScenePackageCannotFallBackToIncidentalWebEntry() throws {
+        let projects = try SceneAcceptanceFixtures.create(in: downloads)
+        try Data("<html></html>".utf8).write(to: projects.cool.appendingPathComponent("index.html"))
+        try Data([1, 2, 3]).write(to: projects.cool.appendingPathComponent("scene.pkg"))
+        XCTAssertThrowsError(try LocalImportService.classify(projects.cool)) { error in
+            guard case LocalImportError.invalidScene = error else { return XCTFail("Scene was not classified safely: \(error)") }
+        }
+    }
+
+    @MainActor
+    func testInvalidSceneEntryRejectedBeforeCopyAndLibraryWrite() async throws {
+        let projects = try SceneAcceptanceFixtures.create(in: downloads)
+        try JSONSerialization.data(withJSONObject: ["type": "scene", "file": "../warm/scene.json"])
+            .write(to: projects.cool.appendingPathComponent("project.json"))
+        let library = WallpaperLibrary(storage: storage)
+        let result = await LocalImportService(library: library).importItem(at: projects.cool)
+        XCTAssertNil(result.wallpaper); XCTAssertTrue(library.wallpapers.isEmpty)
+        XCTAssertTrue(entries(in: storage.wallpapersDirectoryURL).isEmpty)
+    }
+
+    @MainActor
+    func testPackedSceneCopiesAndPreparesPortedGraphFromPackage() async throws {
+        let original = try download(try fixture("scene-graph-sample").appendingPathComponent("warm"), as: "打包 Scene")
+        var files: [(String, Data)] = []
+        for url in FileManager.default.enumerator(at: original, includingPropertiesForKeys: [.isRegularFileKey])?.allObjects as? [URL] ?? [] {
+            guard (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true,
+                  url.lastPathComponent != "project.json" else { continue }
+            files.append((String(url.path.dropFirst(original.path.count + 1)), try Data(contentsOf: url)))
+        }
+        files.sort { $0.0 < $1.0 }
+        func word(_ v: UInt32) -> Data { var value = v.littleEndian; return withUnsafeBytes(of: &value) { Data($0) } }
+        var pkg = word(8) + Data("PKGV0001".utf8) + word(UInt32(files.count)), offset: UInt32 = 0
+        for (path, data) in files {
+            pkg += word(UInt32(path.utf8.count)) + Data(path.utf8) + word(offset) + word(UInt32(data.count))
+            offset += UInt32(data.count)
+        }
+        for (_, data) in files { pkg += data }
+        for name in try FileManager.default.contentsOfDirectory(atPath: original.path) where name != "project.json" {
+            try FileManager.default.removeItem(at: original.appendingPathComponent(name))
+        }
+        try pkg.write(to: original.appendingPathComponent("scene.pkg"))
+        let before = try digest(original)
+        let verified = try await SteamWorkshopPackage.verify(folder: original)
+        XCTAssertEqual(verified.type, .scene); XCTAssertEqual(verified.entryPath, "scene.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: original.appendingPathComponent("scene.json").path))
+        let library = WallpaperLibrary(storage: storage)
+        let outcome = await LocalImportService(library: library).importItem(at: original)
+        let wallpaper = try XCTUnwrap(outcome.wallpaper, "\(outcome.result)")
+        XCTAssertEqual(wallpaper.type, .scene); XCTAssertTrue(outcome.sourceUnchanged)
+        XCTAssertEqual(try digest(original), before); XCTAssertEqual(try digest(wallpaper.resourceURL), before)
+        let renderer = SceneRenderer(wallpaper: wallpaper, engineAssets: nil)
+        defer { renderer.dispose() }
+        try await renderer.prepare()
+        XCTAssertTrue(renderer.scene.usesExtendedRenderGraph); XCTAssertNotNil(renderer.scene.preparedFrame)
+        XCTAssertFalse(renderer.scene.isPlaying)
+    }
+
+    @MainActor
     func testVideoIsCopiedIntoLibraryStorageAndOriginalStaysUntouched() async throws {
         let original = try download(try fixture("loop", "mp4"), as: "海浪.mp4")
         let before = try digest(original)
@@ -64,6 +155,9 @@ final class LocalImportServiceTests: XCTestCase {
         XCTAssertEqual(wallpaper.name, "海浪")
         XCTAssertEqual(wallpaper.type, .video)
         XCTAssertEqual(wallpaper.source, .local)
+        XCTAssertEqual(wallpaper.acquisitionOrigin, .localImport)
+        XCTAssertNotNil(wallpaper.importedAt)
+        XCTAssertEqual(wallpaper.importedAt, wallpaper.updatedAt)
         XCTAssertEqual(library.wallpapers, [wallpaper])
 
         // 内容位于 Library Storage/Wallpapers/<标识>/，字节与原文件一致，但不是同一个路径。
@@ -105,7 +199,7 @@ final class LocalImportServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testWebFolderIsCopiedWholeAndMarkedNotPlayableYet() async throws {
+    func testWebFolderIsCopiedWholeAndPlayableWithWebRenderer() async throws {
         let original = try download(try fixture("web-sample"), as: "海边网页")
         let before = try digest(original)
         let library = WallpaperLibrary(storage: storage)
@@ -122,9 +216,9 @@ final class LocalImportServiceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(wallpaper.thumbnailURL).path))
         XCTAssertEqual(try digest(original), before)
 
-        // 网页壁纸进入资料库，但暂不能播放。
-        XCTAssertFalse(WallpaperRuntimeManager.isRendererAvailable(for: wallpaper.type))
-        XCTAssertThrowsError(try WallpaperRuntimeManager.standardRenderer(for: wallpaper))
+        XCTAssertTrue(WallpaperRuntimeManager.isRendererAvailable(for: wallpaper.type))
+        let renderer = try XCTUnwrap(WallpaperRuntimeManager.standardRenderer(for: wallpaper) as? WebRenderer)
+        renderer.dispose()
     }
 
     @MainActor
@@ -247,7 +341,8 @@ final class LocalImportServiceTests: XCTestCase {
         XCTAssertTrue(panel.canChooseDirectories)
         XCTAssertTrue(panel.allowsMultipleSelection)
         XCTAssertFalse(panel.canCreateDirectories)
-        XCTAssertEqual(Set(panel.allowedContentTypes), [.mpeg4Movie, .quickTimeMovie, .folder])
+        XCTAssertEqual(Set(panel.allowedContentTypes), Set(VideoFormats.contentTypes + [.folder]))
+        XCTAssertTrue(panel.allowedContentTypes.contains(UTType(filenameExtension: "m4v")!), "1.0 Module 8: M4V")
         XCTAssertEqual(panel.prompt, "导入")
     }
 }

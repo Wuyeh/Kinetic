@@ -1,8 +1,9 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// 「从 Mac 导入…」使用的系统打开面板。
+/// Module 8：「从 Mac 导入…」使用的系统打开面板。
 /// 只负责让用户选择项目；复制与入库由 LocalImportService 完成。
+/// 界面入口（Floating Toolbar ＋、Menu Bar）属于 Module 15 / 16，届时直接调用这里。
 @MainActor
 enum LocalImportPanel {
     static func makePanel() -> NSOpenPanel {
@@ -15,7 +16,7 @@ enum LocalImportPanel {
         panel.allowsMultipleSelection = true
         panel.canCreateDirectories = false
         panel.treatsFilePackagesAsDirectories = false
-        panel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie, .folder]
+        panel.allowedContentTypes = VideoFormats.contentTypes + [.folder]
         return panel
     }
 

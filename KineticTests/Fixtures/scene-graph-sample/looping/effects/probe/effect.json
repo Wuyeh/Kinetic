@@ -1,0 +1,24 @@
+{
+  "fbos": [
+    {
+      "format": "rgba8888",
+      "name": "_rt_KineticPulse",
+      "scale": 1
+    }
+  ],
+  "passes": [
+    {
+      "material": "materials/pulse.json",
+      "target": "_rt_KineticPulse"
+    },
+    {
+      "bind": [
+        {
+          "index": 0,
+          "name": "_rt_KineticPulse"
+        }
+      ],
+      "material": "materials/copy.json"
+    }
+  ]
+}

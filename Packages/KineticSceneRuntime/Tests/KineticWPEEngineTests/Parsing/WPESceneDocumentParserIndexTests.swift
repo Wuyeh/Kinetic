@@ -1,0 +1,195 @@
+import Foundation
+import Testing
+@testable import KineticWPEEngine
+
+@Suite("WPESceneDocumentParser object index")
+struct WPESceneDocumentParserIndexTests {
+
+    /// The parser cannot depend on the JS script runtime, so tests supply a no-op
+    /// resolver — none of these fixtures use origin scripts.
+    private struct NoScriptResolver: WPESceneTransformScriptResolving {
+        func resolveVec3(
+            script: String,
+            properties: [String: WPESceneScriptPropertyValue],
+            seed: SIMD3<Double>
+        ) -> SIMD3<Double>? { nil }
+    }
+
+    private func parse(_ payload: [String: Any]) throws -> WPESceneDocument {
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try WPESceneDocumentParser.parse(
+            data: data,
+            userValues: [:],
+            makeTransformScriptResolver: { _, _ in NoScriptResolver() }
+        )
+    }
+
+    @Test("Duplicate object ids resolve last-write-wins for transform, visibility and parent")
+    func duplicateObjectIDResolvesLastWins() throws {
+        // Two image objects share id 100 (a malformed export / corrupt .pkg). Every
+        // pass must resolve the SAME source object — the last one — instead of
+        // transform reading the first while hierarchy/visibility read the last.
+        let payload: [String: Any] = [
+            "camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 1920, "height": 1080]],
+            "objects": [
+                [
+                    "id": 100,
+                    "name": "first",
+                    "image": "models/first.json",
+                    "origin": "111 0 0",
+                    "visible": true,
+                    "parent": 10,
+                ],
+                [
+                    "id": 100,
+                    "name": "second",
+                    "image": "models/second.json",
+                    "origin": "222 0 0",
+                    "visible": false,
+                    "parent": 20,
+                ],
+            ],
+        ]
+        let document = try parse(payload)
+
+        // Every parsed image object keyed to id 100 shares the last-wins transform
+        // and visibility (the parser emits one image per raw entry).
+        let duplicates = document.imageObjects.filter { $0.id == "100" }
+        #expect(!duplicates.isEmpty)
+        for object in duplicates {
+            #expect(abs(object.origin.x - 222) < 0.001)
+            #expect(object.visible == false)
+        }
+        #expect(document.objectParentByID["100"] == "20")
+    }
+
+    @Test("A nested group's attachment is inherited by a deep descendant image")
+    func nestedGroupAttachmentInheritedByDeepChild() throws {
+        // body(10) → groupA(20, attachment name fixture) → groupB(30, no attachment) →
+        // image(40). The child walks past the attachment-less nearer group to the
+        // first group carrying an anchor, inheriting its name and the group's parent.
+        let payload: [String: Any] = [
+            "camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 1920, "height": 1080]],
+            "objects": [
+                ["id": 10, "name": "body", "image": "models/body.json", "origin": "0 0 0"],
+                ["id": 20, "name": "groupA", "attachment": "头部", "parent": 10],
+                ["id": 30, "name": "groupB", "parent": 20],
+                ["id": 40, "name": "hair", "image": "models/hair.json", "parent": 30],
+            ],
+        ]
+        let document = try parse(payload)
+        let child = try #require(document.imageObjects.first { $0.id == "40" })
+        #expect(child.attachment == "头部")
+        #expect(child.parentObjectID == "10")
+    }
+
+    @Test("Unknown nested parameters remain losslessly available after typed parsing")
+    func unknownParametersRemainAvailable() throws {
+        let payload: [String: Any] = [
+            "camera": ["center": "0 0 0"],
+            "general": [
+                "orthogonalprojection": ["width": 1920, "height": 1080],
+                "futureFlag": true,
+            ],
+            "objects": [[
+                "id": 1,
+                "name": "future layer",
+                "futureObjectField": [
+                    "mode": "oracle",
+                    "weights": [0.25, 2, NSNull()],
+                ],
+            ]],
+            "futureRoot": ["revision": 7],
+        ]
+
+        let document = try parse(payload)
+
+        #expect(document.sourceJSON["general"]?["futureFlag"] == .bool(true))
+        #expect(document.sourceJSON["futureRoot"]?["revision"] == .number(7))
+        let futureField = document.sourceJSON["objects"]?[0]?["futureObjectField"]
+        #expect(futureField?["mode"] == .string("oracle"))
+        #expect(futureField?["weights"]?[0] == .number(0.25))
+        #expect(futureField?["weights"]?[1] == .number(2))
+        #expect(futureField?["weights"]?[2] == .null)
+    }
+}
+
+@Suite("Malformed array elements")
+struct WPESceneMalformedArrayElementTests {
+    private struct NoScriptResolver: WPESceneTransformScriptResolving {
+        func resolveVec3(
+            script: String,
+            properties: [String: WPESceneScriptPropertyValue],
+            seed: SIMD3<Double>
+        ) -> SIMD3<Double>? { nil }
+    }
+
+    @Test("A junk element among scene objects does not erase the valid ones")
+    func junkObjectElementKeepsSiblings() throws {
+        let payload: [String: Any] = [
+            "camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 1920, "height": 1080]],
+            "objects": [
+                [
+                    "id": 100,
+                    "name": "kept",
+                    "image": "models/kept.json",
+                    "origin": "0 0 0",
+                    "visible": true
+                ],
+                0
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let document = try WPESceneDocumentParser.parse(
+            data: data,
+            userValues: [:],
+            makeTransformScriptResolver: { _, _ in NoScriptResolver() }
+        )
+        #expect(document.imageObjects.count == 1,
+                "the valid sibling of a junk element must survive")
+        #expect(document.imageObjects.first?.name == "kept")
+    }
+
+    @Test("A junk element among a particle's control points keeps the parsed ones")
+    func junkControlPointKeepsSiblings() throws {
+        let json: [String: Any] = [
+            "emitter": [["name": "e", "rate": 5]],
+            "controlpoint": [
+                ["id": 0, "offset": "1 2 3", "flags": 1],
+                "junk"
+            ]
+        ]
+        var diagnostics: [WPESceneDiagnostic] = []
+        let definition = WPEParticleDefinitionParser.parse(dictionary: json, diagnostics: &diagnostics)
+        #expect(definition.controlPoints.count == 1)
+        #expect(definition.controlPoints.first?.pointerLocked == true)
+    }
+
+    @Test("A nonfinite user color envelope falls back before scene geometry publication")
+    func nonfiniteUserColorUsesSafeFallback() throws {
+        let data = Data(#"{"camera":{"center":"0 0 0"},"general":{"orthogonalprojection":{"width":1920,"height":1080}},"objects":[{"id":1,"name":"layer","image":"models/layer.json","color":{"user":"accent","value":"1 1 1"}}]}"#.utf8)
+        let document = try WPESceneDocumentParser.parse(
+            data: data,
+            userValues: ["accent": .string("nan 0 0")],
+            makeTransformScriptResolver: { _, _ in NoScriptResolver() }
+        )
+        let layer = try #require(document.imageObjects.first)
+        #expect(layer.color == SIMD3<Double>(repeating: 1))
+    }
+
+    @Test("Scalar and XYZ user envelopes use finite field defaults")
+    func nonfiniteScalarAndXYZEnvelopesUseFiniteDefaults() throws {
+        let data = Data(#"{"camera":{"center":"0 0 0"},"general":{"orthogonalprojection":{"width":1920,"height":1080}},"objects":[{"id":1,"name":"layer","image":"models/layer.json","alpha":{"user":"opacity","value":0.5},"color":{"x":{"user":"accentx","value":0.2},"y":0.5,"z":0.75}}]}"#.utf8)
+        let document = try WPESceneDocumentParser.parse(
+            data: data,
+            userValues: ["opacity": .string("inf"), "accentx": .string("nan")],
+            makeTransformScriptResolver: { _, _ in NoScriptResolver() }
+        )
+        let layer = try #require(document.imageObjects.first)
+        #expect(layer.alpha == 1)
+        #expect(layer.color == SIMD3<Double>(0, 0.5, 0.75))
+    }
+}

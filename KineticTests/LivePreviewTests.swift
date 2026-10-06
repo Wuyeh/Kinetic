@@ -5,7 +5,7 @@ import WebKit
 import XCTest
 @testable import Kinetic
 
-/// 悬停预览的延迟、取消、唯一性、失败回退、资源释放与网页安全边界。
+/// Module 11.1：悬停预览的延迟、取消、唯一性、失败回退、资源释放与网页安全边界。
 @MainActor
 final class LivePreviewTests: XCTestCase {
     // MARK: Fakes & helpers
@@ -406,7 +406,7 @@ final class LivePreviewTests: XCTestCase {
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let host = LivePreviewHostView(frame: NSRect(x: 0, y: 0, width: 180, height: 112.5))
+        let host = LivePreviewHostView(frame: NSRect(x: 0, y: 0, width: 180, height: 180))
         window.contentView?.addSubview(host)
         host.embed(session.contentView)
         session.start()
@@ -426,7 +426,8 @@ final class LivePreviewTests: XCTestCase {
             let layer = try XCTUnwrap(content.layer?.sublayers?.first { $0 is AVPlayerLayer } as? AVPlayerLayer)
             XCTAssertEqual(layer.frame.size.width, width, accuracy: 0.5)
             XCTAssertEqual(layer.frame.size.height, height, accuracy: 0.5)
-            XCTAssertEqual(layer.videoGravity, .resizeAspectFill)
+            // 1.0 Module 11：正方形 Poster 中保持原比例、完整显示。
+            XCTAssertEqual(layer.videoGravity, .resizeAspect)
             XCTAssertTrue(session.player === player, "Resizing must not recreate the preview player")
             XCTAssertEqual(session.state, .playing)
         }
@@ -461,7 +462,7 @@ final class LivePreviewTests: XCTestCase {
         weak var weakWebView: WKWebView?
         do {
             let web = try XCTUnwrap(session.webView)
-            XCTAssertEqual(web.configuration.userContentController.userScripts.count, 2)
+            XCTAssertEqual(web.configuration.userContentController.userScripts.count, 3)
             let result = try await web.callAsyncJavaScript("""
                 const video = document.createElement('video');
                 video.muted = false;

@@ -1,0 +1,19 @@
+{
+  "passes": [
+    {
+      "blending": "disabled",
+      "constantshadervalues": {
+        "g_Color": [
+          1,
+          0,
+          0,
+          1
+        ]
+      },
+      "shader": "solidcolor",
+      "textures": [
+        "pixel.tex"
+      ]
+    }
+  ]
+}

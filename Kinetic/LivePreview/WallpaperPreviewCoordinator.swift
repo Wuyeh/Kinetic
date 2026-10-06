@@ -1,7 +1,7 @@
 import AppKit
 import os
 
-/// 预览区域显示什么内容。与卡片外观状态（Active / Selected / Hover / Unsupported）无关。
+/// Module 11.1：预览区域显示什么内容。与卡片外观状态（Active / Selected / Hover / Unsupported）无关。
 /// 没有 Live Preview 会话时为静态缩略图。
 enum PreviewContentState: Equatable {
     case staticThumbnail
@@ -272,7 +272,7 @@ enum LivePreviewEligibility {
         case .video:
             let url = wallpaper.resourceURL
             return url.isFileURL
-                && LocalImportService.videoExtensions.contains(url.pathExtension.lowercased())
+                && VideoFormats.hasVideoExtension(url)
                 && FileManager.default.isReadableFile(atPath: url.path)
         case .web:
             return WebPreviewSession.entryURL(for: wallpaper) != nil

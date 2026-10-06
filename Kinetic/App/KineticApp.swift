@@ -13,16 +13,18 @@ struct KineticApp: App {
             width: MainWindowDesignTokens.Window.defaultWidth,
             height: MainWindowDesignTokens.Window.defaultHeight
         )
+        .windowStyle(.hiddenTitleBar)
 
         Settings {
-            Color(nsColor: .windowBackgroundColor)
-                .frame(width: 480, height: 320)
+            KineticSettingsView(appDelegate: appDelegate)
                 .environment(\.locale, Locale(identifier: "zh-Hans"))
         }
 
-        MenuBarExtra("app.name", systemImage: "photo") {
-            Text("menu.placeholder")
+        MenuBarExtra {
+            KineticMenuBarControllerView(appDelegate: appDelegate)
                 .environment(\.locale, Locale(identifier: "zh-Hans"))
+        } label: {
+            KineticMenuBarStatusView(appDelegate: appDelegate)
         }
         .menuBarExtraStyle(.menu)
     }

@@ -1,4 +1,4 @@
-// 测试素材生成工具，不参与 App 构建。输出仅写入命令行指定的 Fixtures 目录。
+// 验收工具，不参与 App 构建。输出仅写入命令行指定的本项目 Fixtures 目录。
 import AVFoundation
 import AudioToolbox
 import CoreGraphics

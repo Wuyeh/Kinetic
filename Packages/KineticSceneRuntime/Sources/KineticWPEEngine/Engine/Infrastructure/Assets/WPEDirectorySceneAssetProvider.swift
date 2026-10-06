@@ -1,0 +1,70 @@
+#if !LITE_BUILD
+import Foundation
+
+struct WPEDirectorySceneAssetProvider: WPESceneAssetProvider {
+    let rootURL: URL
+
+    init(rootURL: URL) {
+        self.rootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    /// Computed rather than stored so the struct stays `Sendable` (`FileManager` is not `Sendable`).
+    private var fileManager: FileManager { .default }
+
+    func data(atRelativePath relativePath: String) throws -> Data {
+        let url = try strictURL(for: relativePath)
+        guard isRegularFile(url) else {
+            throw WPESceneAssetProviderError.fileMissing(relativePath)
+        }
+        // Keep the system's domain/code and reason (e.g. access denied or I/O)
+        // instead of replacing them with only the file name.
+        return try Data(contentsOf: url, options: [.mappedIfSafe])
+    }
+
+    func stagedURL(atRelativePath relativePath: String) throws -> URL {
+        let url = try strictURL(for: relativePath)
+        guard isRegularFile(url) else {
+            throw WPESceneAssetProviderError.fileMissing(relativePath)
+        }
+        return url
+    }
+
+    func exists(atRelativePath relativePath: String) -> Bool {
+        guard let url = try? strictURL(for: relativePath) else { return false }
+        return isRegularFile(url)
+    }
+
+    var entryNames: [String] {
+        guard let enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        let rootPrefix = rootURL.path + "/"
+        var names: [String] = []
+        for case let fileURL as URL in enumerator {
+            guard
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                values.isRegularFile == true
+            else { continue }
+            let standardized = fileURL.standardizedFileURL.path
+            guard standardized.hasPrefix(rootPrefix) else { continue }
+            names.append(String(standardized.dropFirst(rootPrefix.count)))
+        }
+        return names.sorted()
+    }
+
+    private func isRegularFile(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+
+    private func strictURL(for relativePath: String) throws -> URL {
+        guard let url = WPEPathSafety.strictResourceURL(root: rootURL, relativePath: relativePath) else {
+            throw WPESceneAssetProviderError.invalidRelativePath(relativePath)
+        }
+        return url
+    }
+}
+#endif

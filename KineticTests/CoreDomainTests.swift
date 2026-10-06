@@ -26,9 +26,29 @@ final class CoreDomainTests: XCTestCase {
 
                 XCTAssertEqual(restored, wallpaper)
                 XCTAssertEqual(restored.id, wallpaper.id)
-                XCTAssertEqual(restored.supportState, type == .scene ? .unsupported : .supported)
+                XCTAssertEqual(restored.supportState, .supported)
             }
         }
+    }
+
+    /// 1.0：记录以 acquisitionOrigin 保存来源；v0.1 记录的 source 读取时转换，之后不再写出。
+    func testLegacySourceDecodesToAcquisitionOriginAndIsNotWrittenBack() throws {
+        let id = UUID()
+        for (legacy, origin) in [("local", AcquisitionOrigin.localImport), ("steam", .steamWorkshop)] {
+            let json = #"{"id":"\#(id.uuidString)","name":"旧","type":"video","source":"\#(legacy)","resourceURL":"file:///x","isFavorite":false}"#
+            let decoded = try JSONDecoder().decode(Wallpaper.self, from: Data(json.utf8))
+            XCTAssertEqual(decoded.acquisitionOrigin, origin)
+            XCTAssertEqual(decoded.source.rawValue, legacy)
+            XCTAssertEqual(decoded.settings, PerWallpaperSettings())
+            let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
+            XCTAssertNil(encoded["source"])
+            XCTAssertEqual(encoded["acquisitionOrigin"] as? String, origin.rawValue)
+        }
+        let neither = #"{"id":"\#(id.uuidString)","name":"无来源","type":"video","resourceURL":"file:///x","isFavorite":false}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Wallpaper.self, from: Data(neither.utf8)),
+                             "The origin is never guessed")
+        XCTAssertEqual(AcquisitionOrigin.allCases,
+                       [.localImport, .steamWorkshop, .appleAerial, .bundledDemo, .futureRemoteSource])
     }
 
     func testEditingMetadataPreservesWallpaperIdentity() {

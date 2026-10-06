@@ -1,6 +1,6 @@
 import Foundation
 
-/// Runtime 的数据快照；不包含状态转换与资源管理逻辑。
+/// Runtime 的数据快照；状态转换、资源管理与错误恢复属于后续模块。
 /// 不包含资料库的 UI 选中状态。
 struct WallpaperRuntimeState: Equatable, Sendable {
     var playbackState: PlaybackState = .noWallpaper

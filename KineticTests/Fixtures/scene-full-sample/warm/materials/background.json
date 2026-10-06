@@ -1,0 +1,16 @@
+{
+  "passes": [
+    {
+      "blending": "disabled",
+      "constantshadervalues": {
+        "g_Color": [
+          0.62,
+          0.22,
+          0.08,
+          1
+        ]
+      },
+      "shader": "solidcolor"
+    }
+  ]
+}

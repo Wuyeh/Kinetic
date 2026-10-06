@@ -1,0 +1,11 @@
+{
+  "passes": [
+    {
+      "blending": "translucent",
+      "shader": "commands/copy",
+      "textures": [
+        "panel"
+      ]
+    }
+  ]
+}

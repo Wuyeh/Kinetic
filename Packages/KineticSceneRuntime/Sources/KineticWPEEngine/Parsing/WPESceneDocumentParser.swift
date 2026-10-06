@@ -1,0 +1,2610 @@
+import CoreGraphics
+import Foundation
+
+public protocol WPESceneTransformScriptResolving {
+    func resolveVec3(
+        script: String,
+        properties: [String: WPESceneScriptPropertyValue],
+        seed: SIMD3<Double>
+    ) -> SIMD3<Double>?
+
+    func resolveBatch(
+        _ requests: [WPESceneTransformScriptRequest]
+    ) -> [SIMD3<Double>?]
+}
+
+public struct WPESceneTransformScriptRequest: Equatable, Sendable {
+    public let script: String
+    public let properties: [String: WPESceneScriptPropertyValue]
+    public let seed: SIMD3<Double>
+
+    public init(
+        script: String,
+        properties: [String: WPESceneScriptPropertyValue],
+        seed: SIMD3<Double>
+    ) {
+        self.script = script
+        self.properties = properties
+        self.seed = seed
+    }
+}
+
+public extension WPESceneTransformScriptResolving {
+    func resolveBatch(
+        _ requests: [WPESceneTransformScriptRequest]
+    ) -> [SIMD3<Double>?] {
+        requests.map {
+            resolveVec3(script: $0.script, properties: $0.properties, seed: $0.seed)
+        }
+    }
+}
+
+public enum WPETransformScriptStaticAnalysis {
+    /// Markers for anything a parse-time evaluation cannot know. Matching is
+    /// case-sensitive because `Date` would otherwise match `update`.
+    public static let dynamicTokens = [
+        "getTimeOfDay", "engine.runtime", "frametime", "frameTime", "getTime", "Date",
+        // `registerAudioBuffers` needs its own entry: matching is case-sensitive, so
+        // the capital A never hits "audio".
+        "Math.random", "getFrequency", "getFrequencies", "audio", "registerAudioBuffers", "elapsed",
+        "input.cursorWorldPosition", "shared.", "shared[",
+        // Layer/scene handles are runtime graph state even with no clock, pointer, audio
+        // or shared-state use: baking one skips init() and freezes a live parent link.
+        "thisLayer", "thisObject", "thisScene",
+        // `getTimeOfDay` above does not cover `engine.timeOfDay`: the comparison is a
+        // case-sensitive substring, and the property form refreshes every frame.
+        "timeOfDay"
+    ]
+
+    public static let staticExecutionBlocklistPatterns = [
+        #"\bwhile\s*\("#,
+        #"\bfor\s*\("#,
+        #"\bdo\s*\{"#,
+        #"\beval\s*\("#,
+        #"\bFunction\s*\("#
+    ]
+
+    public static func isStaticallyResolvable(_ script: String) -> Bool {
+        guard !dynamicTokens.contains(where: { script.contains($0) }) else { return false }
+        return !staticExecutionBlocklistPatterns.contains {
+            script.range(of: $0, options: .regularExpression) != nil
+        }
+    }
+}
+
+public enum WPESharedReadFanAnalysis: Sendable {
+    public static func readKey(in script: String) -> String? {
+        guard let body = updateFunctionBody(in: script),
+              !body.contains(where: { $0 == "{" || $0 == "}" }) else {
+            return nil
+        }
+        let compact = body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard compact.hasPrefix("return shared."),
+              let key = sharedIdentifier(in: compact, after: "return shared.") else {
+            return nil
+        }
+        if script.contains("registerAudioBuffers") { return nil }
+        if script.contains("setTimeout") || script.contains("setInterval") { return nil }
+        if script.contains("function applyUserProperties") { return nil }
+        if hasMemberAssignment(script, object: "thisLayer") { return nil }
+        if hasMemberAssignment(script, object: "thisObject") { return nil }
+        if hasMemberAssignment(script, object: "thisScene") { return nil }
+        if hasSharedWrite(script, key: key) { return nil }
+        return key
+    }
+
+    /// Host-side `shared` values after the JS bridge (`toObject` / Number / Bool).
+    public static func vec3(from value: Any?) -> SIMD3<Double>? {
+        guard let value else { return nil }
+        if let vector = value as? SIMD3<Double> {
+            return finite(vector)
+        }
+        if let flag = value as? Bool {
+            return SIMD3(repeating: flag ? 1 : 0)
+        }
+        if let number = double(from: value) {
+            return SIMD3(repeating: number)
+        }
+        if let array = value as? [Any], array.count >= 2 {
+            guard let x = double(from: array[0]), let y = double(from: array[1]) else { return nil }
+            let z = array.count >= 3 ? (double(from: array[2]) ?? 0) : 0
+            return finite(SIMD3(x, y, z))
+        }
+        if let dictionary = value as? [AnyHashable: Any] {
+            return vec3(fromDictionary: dictionary)
+        }
+        if let dictionary = value as? NSDictionary {
+            var boxed: [AnyHashable: Any] = [:]
+            for (key, boxedValue) in dictionary {
+                if let hashable = key as? AnyHashable {
+                    boxed[hashable] = boxedValue
+                }
+            }
+            return vec3(fromDictionary: boxed)
+        }
+        return nil
+    }
+
+    private static func updateFunctionBody(in script: String) -> String? {
+        guard let match = script.range(
+            of: #"function\s+update\s*\([^)]*\)\s*\{"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+        let start = match.upperBound
+        var depth = 1
+        var index = start
+        while index < script.endIndex {
+            let character = script[index]
+            if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(script[start..<index])
+                }
+            }
+            index = script.index(after: index)
+        }
+        return nil
+    }
+
+    private static func sharedIdentifier(in compact: String, after prefix: String) -> String? {
+        let rest = compact.dropFirst(prefix.count)
+        var ident = ""
+        for character in rest {
+            if character == ";" { break }
+            if character.isWhitespace {
+                if !ident.isEmpty { break }
+                continue
+            }
+            if ident.isEmpty {
+                guard character.isLetter || character == "_" else { return nil }
+            } else if !(character.isLetter || character.isNumber || character == "_") {
+                return nil
+            }
+            ident.append(character)
+        }
+        return ident.isEmpty ? nil : ident
+    }
+
+    private static func hasMemberAssignment(_ script: String, object: String) -> Bool {
+        script.range(
+            of: "\(object)\\.[A-Za-z_][A-Za-z0-9_]*\\s*=",
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func hasSharedWrite(_ script: String, key: String) -> Bool {
+        script.range(
+            of: "shared\\.\(NSRegularExpression.escapedPattern(for: key))\\s*=",
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func vec3(fromDictionary dictionary: [AnyHashable: Any]) -> SIMD3<Double>? {
+        let x = double(from: dictionary["x"] ?? dictionary[0])
+        let y = double(from: dictionary["y"] ?? dictionary[1])
+        guard let x, let y else { return nil }
+        let z = double(from: dictionary["z"] ?? dictionary[2]) ?? 0
+        return finite(SIMD3(x, y, z))
+    }
+
+    private static func double(from value: Any?) -> Double? {
+        switch value {
+        case let number as Double:
+            return number.isFinite ? number : nil
+        case let number as Float:
+            let value = Double(number)
+            return value.isFinite ? value : nil
+        case let number as NSNumber:
+            let value = number.doubleValue
+            return value.isFinite ? value : nil
+        case let number as Int:
+            return Double(number)
+        default:
+            return nil
+        }
+    }
+
+    private static func finite(_ vector: SIMD3<Double>) -> SIMD3<Double>? {
+        vector.x.isFinite && vector.y.isFinite && vector.z.isFinite ? vector : nil
+    }
+}
+
+public enum WPESceneDocumentParser {
+
+    public static func parse(
+        data: Data,
+        userValues: [String: WallpaperEngineProjectPropertyValue],
+        makeTransformScriptResolver: (_ canvasWidth: Double, _ canvasHeight: Double) -> any WPESceneTransformScriptResolving
+    ) throws -> WPESceneDocument {
+        guard !data.isEmpty else {
+            throw WPESceneDocumentError.invalidUTF8
+        }
+        let json: Any
+        do {
+            json = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
+        } catch {
+            throw WPESceneDocumentError.invalidUTF8
+        }
+        guard let sourceJSON = WPESceneJSONValue(jsonValue: json) else {
+            throw WPESceneDocumentError.malformedField("source JSON")
+        }
+        // Record property→target bindings BEFORE resolving envelopes, since
+        // resolution replaces `{"user":K}` with the literal value and loses the key.
+        let propertyBindings = extractUserPropertyBindings(in: json)
+        let resolvedJSON = try resolveUserPropertyEnvelopes(in: json, userValues: userValues)
+        guard let root = resolvedJSON as? [String: Any] else {
+            throw WPESceneDocumentError.rootNotObject
+        }
+
+        var diagnostics: [WPESceneDiagnostic] = []
+
+        guard let cameraDict = root["camera"] as? [String: Any] else {
+            throw WPESceneDocumentError.missingCamera
+        }
+        guard let generalDict = root["general"] as? [String: Any] else {
+            throw WPESceneDocumentError.missingGeneral
+        }
+
+        let rawGeneralDict = ((json as? [String: Any])?["general"] as? [String: Any]) ?? generalDict
+        let authoredCamera = parseCamera(cameraDict, general: generalDict)
+        let authoredCameraMetadata = parseAuthoredCameraMetadata(
+            ((json as? [String: Any])?["camera"] as? [String: Any]) ?? cameraDict
+        )
+        let general = parseGeneral(generalDict, authored: rawGeneralDict, diagnostics: &diagnostics)
+
+        let rawObjects: [[String: Any]] = WPEValueParser.objectArray(root["objects"]) ?? []
+        let authoredObjects: [[String: Any]] = WPEValueParser.objectArray((json as? [String: Any])?["objects"])
+            ?? rawObjects
+        let authoredCameraObjects = parseAuthoredCameraObjects(authoredObjects)
+        // Must run before transform combination so each parent offset applies to the
+        // fresh local origin; the baked `value` is stale once bound sliders move.
+        let scriptResolvedOrigins = resolveScriptOrigins(
+            rawObjects,
+            canvasWidth: general.orthogonalProjection.width,
+            canvasHeight: general.orthogonalProjection.height,
+            makeResolver: makeTransformScriptResolver
+        )
+        // Camera objects consume the same freshly evaluated local origin as
+        // layers; their authored seed can predate the current bound properties.
+        let camera = runtimeCameraObjectOverride(
+            rawObjects,
+            scriptOrigins: scriptResolvedOrigins,
+            base: authoredCamera,
+            diagnostics: &diagnostics
+        )
+        // Later duplicate ids win, matching the paint-order map below, so a malformed
+        // document resolves every field from one source object.
+        let objectsByID = indexObjectsByID(rawObjects)
+        let objectTransforms = resolvedObjectTransforms(
+            objectsByID,
+            scriptOrigins: scriptResolvedOrigins
+        )
+        let objectVisibility = resolvedObjectVisibility(objectsByID)
+        let (objectParentByID, ownVisibilityByID) = objectHierarchy(from: objectsByID)
+        let inheritedAttachments = inheritedGroupAttachments(from: objectsByID)
+        var imageObjects: [WPESceneImageObject] = []
+        var scriptHostObjects: [WPESceneScriptHostObject] = []
+        var transformHostObjects: [WPESceneTransformHostObject] = []
+        var particleObjects: [WPESceneParticleObject] = []
+        var textObjects: [WPESceneTextObject] = []
+        var soundObjects: [WPESceneSoundObject] = []
+        var lightObjects: [WPESceneLightObject] = []
+        var objectPaintOrder: [String: Int] = [:]
+
+        for (index, entry) in rawObjects.enumerated() {
+            let authoredEntry = authoredObjects.indices.contains(index) ? authoredObjects[index] : entry
+            let objectName = entry["name"] as? String ?? "?"
+            let resolution = objectKindResolution(for: entry)
+            let entryID = objectID(in: entry)
+            if let entryID {
+                objectPaintOrder[entryID] = index
+            }
+            let transform = entryID.flatMap { objectTransforms[$0] }
+                ?? localTransform(in: entry, scriptOrigins: scriptResolvedOrigins)
+            let effectiveVisible = entryID.flatMap { objectVisibility[$0] }
+            if resolution.isAmbiguous {
+                let declared = resolution.candidates.map(\.rawValue).joined(separator: ", ")
+                diagnostics.append(.init(severity: .warning, message: "Ambiguous object \(objectName) declares \(declared)"))
+            }
+
+            if resolution.primary == .image,
+               let object = parseImageObject(
+                   entry,
+                   transform: transform,
+                   canvasHeight: general.orthogonalProjection.height,
+                   scriptOrigins: scriptResolvedOrigins,
+                   effectiveVisible: effectiveVisible,
+                   inheritedAttachment: entryID.flatMap { inheritedAttachments[$0] },
+                   diagnostics: &diagnostics
+            ) {
+                imageObjects.append(object)
+            } else if !hasValue(entry, "image"),
+                      !hasValue(entry, "model"),
+                      let object = parseScriptHostObject(entry, diagnostics: &diagnostics) {
+                scriptHostObjects.append(object)
+            }
+            if resolution.primary != .image,
+               resolution.primary != .particle,
+               resolution.primary != .text,
+               resolution.primary != .sound,
+               let object = parseTransformHostObject(
+                entry,
+                transform: transform,
+                scriptOrigins: scriptResolvedOrigins
+               ) {
+                transformHostObjects.append(object)
+            }
+            if resolution.primary == .particle,
+               let object = parseParticleObject(
+                   entry,
+                   transform: transform,
+                   effectiveVisible: effectiveVisible,
+                   diagnostics: &diagnostics
+               ) {
+                particleObjects.append(object)
+            }
+            if resolution.primary == .text,
+               let object = parseTextObject(
+                   entry,
+                   transform: transform,
+                   localOrigin: localTransform(in: entry, scriptOrigins: scriptResolvedOrigins).origin,
+                   localScale: localTransform(in: entry, scriptOrigins: scriptResolvedOrigins).scale,
+                   parentObjectID: entryID.flatMap { objectParentByID[$0] },
+                   effectiveVisible: effectiveVisible,
+                   diagnostics: &diagnostics
+               ) {
+                textObjects.append(object)
+            }
+            if resolution.primary == .sound,
+               let object = parseSoundObject(
+                   entry,
+                   authored: authoredEntry,
+                   effectiveVisible: effectiveVisible,
+                   diagnostics: &diagnostics
+               ) {
+                soundObjects.append(object)
+            }
+            if resolution.primary == .light,
+               let object = parseLightObject(
+                   entry,
+                   authored: authoredEntry,
+                   transform: transform,
+                   effectiveVisible: effectiveVisible,
+                   diagnostics: &diagnostics
+               ) {
+                lightObjects.append(object)
+            }
+
+            var unsupportedKinds = resolution.candidates.filter {
+                $0 != .image && $0 != .unknown && $0 != .particle && $0 != .text
+                    && $0 != .sound && $0 != .light
+            }
+            if resolution.primary != .image
+                && resolution.primary != .particle
+                && resolution.primary != .text
+                && resolution.primary != .sound
+                && resolution.primary != .light
+                && resolution.primary != .unknown
+                && !unsupportedKinds.contains(resolution.primary) {
+                unsupportedKinds.append(resolution.primary)
+            }
+            for kind in unsupportedKinds {
+                diagnostics.append(.init(severity: .info, message: "\(kind.displayName) object \(objectName) is unsupported by the current renderer"))
+            }
+            if resolution.primary == .particle {
+                diagnostics.append(.init(severity: .info, message: "Particle object \(objectName) parsed; rendered by the Metal particle simulator"))
+            }
+            if resolution.primary == .text {
+                diagnostics.append(.init(severity: .info, message: "Text object \(objectName) parsed; glyph-mesh text renderer draws it"))
+            }
+            if resolution.primary == .sound {
+                diagnostics.append(.init(severity: .info, message: "Sound object \(objectName) parsed; AVAudioEngine playback runs at scene start"))
+            }
+            if resolution.primary == .light {
+                diagnostics.append(.init(
+                    severity: .info,
+                    message: "Light object \(objectName) fields and dynamic bindings are preserved; Metal light uniforms and shadows await their L1 gates"
+                ))
+            }
+
+            if resolution.primary == .unknown {
+                let type = resolution.explicitType ?? "missing"
+                diagnostics.append(.init(severity: .info, message: "Object type \(type) is unsupported by the current renderer"))
+            }
+        }
+
+        if (root["effects"] as? [Any])?.isEmpty == false {
+            diagnostics.append(.init(
+                severity: .info,
+                message: String(
+                    localized: "Top-level effects are not yet rendered",
+                    defaultValue: "Top-level effects are not yet rendered",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic when root-level effects are ignored."
+                )
+            ))
+        }
+
+        for key in generalDict.keys {
+            let lowered = key.lowercased()
+            // Only the SDR-only bloom keys lack a render path; HDR bloom renders (parseGeneral).
+            let isUnsupportedSDRBloomKey = lowered.hasPrefix("bloom")
+                && lowered != "bloom"
+                && lowered != "bloomtint"
+                && !lowered.hasPrefix("bloomhdr")
+            if isUnsupportedSDRBloomKey {
+                diagnostics.append(.init(severity: .info, message: "general.\(key) is unsupported by the current renderer"))
+            }
+        }
+
+        return WPESceneDocument(
+            sourceJSON: sourceJSON,
+            camera: camera,
+            staticCamera: authoredCamera,
+            authoredCamera: authoredCameraMetadata,
+            authoredCameraObjects: authoredCameraObjects,
+            cameraMotion: parseCameraMotion(rawObjects, scriptOrigins: scriptResolvedOrigins),
+            general: general,
+            imageObjects: imageObjects,
+            scriptHostObjects: scriptHostObjects,
+            transformHostObjects: transformHostObjects,
+            particleObjects: particleObjects,
+            textObjects: textObjects,
+            soundObjects: soundObjects,
+            lightObjects: lightObjects,
+            objectPaintOrder: objectPaintOrder,
+            propertyBindings: propertyBindings,
+            objectParentByID: objectParentByID,
+            ownVisibilityByID: ownVisibilityByID,
+            diagnostics: diagnostics
+        )
+    }
+
+    private static func parseTransformHostObject(
+        _ dict: [String: Any],
+        transform: SceneObjectTransform,
+        scriptOrigins: [String: SIMD3<Double>] = [:]
+    ) -> WPESceneTransformHostObject? {
+        guard let id = objectID(in: dict) else { return nil }
+        let local = localTransform(in: dict, scriptOrigins: scriptOrigins)
+        return WPESceneTransformHostObject(
+            id: id,
+            name: (dict["name"] as? String) ?? id,
+            parentObjectID: parentID(in: dict),
+            origin: transform.origin,
+            scale: transform.scale,
+            angles: transform.angles,
+            localOrigin: local.origin,
+            localScale: local.scale,
+            localAngles: local.angles,
+            originAnimation: WPEValueParser.animatedValue(dict["origin"]),
+            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false),
+            scaleScript: dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true),
+            anglesScript: dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true),
+            parallaxDepth: parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"])
+        )
+    }
+
+    private static let lightFieldNames = [
+        "origin", "scale", "angles", "color", "radius", "intensity", "visible",
+        "ledsource", "castshadow", "castvolumetrics", "innercone", "outercone",
+        "attenuation", "exponent", "density", "volumetricsexponent",
+        "lightsourcesize", "mindistance", "cascadedistance0", "cascadedistance1",
+        "cascadedistance2"
+    ]
+
+    private static func parseLightObject(
+        _ dict: [String: Any],
+        authored rawDict: [String: Any],
+        transform: SceneObjectTransform,
+        effectiveVisible: Bool?,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneLightObject? {
+        guard let id = objectID(in: dict) else {
+            diagnostics.append(.init(severity: .warning, message: "Light object is missing id"))
+            return nil
+        }
+        let authoredType = nonEmptyString(dict["light"])?.lowercased() ?? "point"
+        let type: WPESceneLightType = switch authoredType {
+        case "point", "lpoint": .point
+        case "spot", "lspot": .spot
+        case "directional", "ldirectional": .directional
+        default: .unknown(authoredType)
+        }
+        let local = localTransform(in: dict)
+        var fieldBindings: [String: WPESceneLightFieldBinding] = [:]
+        for name in lightFieldNames where rawDict[name] != nil {
+            let metadata = authoredScriptMetadata(authored: rawDict[name], resolved: dict[name])
+            fieldBindings[name] = WPESceneLightFieldBinding(
+                seed: WPEValueParser.shaderConstant(rawDict[name]),
+                resolvedValue: WPEValueParser.shaderConstant(dict[name]),
+                userBindings: authoredUserBindings(in: rawDict[name]),
+                script: metadata.script,
+                scriptProperties: metadata.properties
+            )
+        }
+
+        return WPESceneLightObject(
+            id: id,
+            name: nonEmptyString(dict["name"]) ?? id,
+            type: type,
+            authoredType: authoredType,
+            origin: transform.origin,
+            scale: transform.scale,
+            angles: transform.angles,
+            localOrigin: local.origin,
+            localScale: local.scale,
+            localAngles: local.angles,
+            parentObjectID: parentID(in: dict),
+            parallaxDepth: parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"]),
+            color: parseVector3(dict["color"]) ?? SIMD3<Double>(repeating: 1),
+            radius: parseDouble(dict["radius"]) ?? 1_000,
+            intensity: parseDouble(dict["intensity"]) ?? 1,
+            visible: effectiveVisible ?? parseBool(dict["visible"]) ?? true,
+            shape: nonEmptyString(dict["shape"]),
+            ledSource: parseBool(dict["ledsource"]) ?? false,
+            castShadow: parseBool(dict["castshadow"]) ?? false,
+            castVolumetrics: parseBool(dict["castvolumetrics"]) ?? false,
+            innerConeDegrees: parseDouble(dict["innercone"]) ?? 0,
+            outerConeDegrees: parseDouble(dict["outercone"]) ?? 0,
+            attenuation: parseDouble(dict["attenuation"]) ?? 0,
+            exponent: parseDouble(dict["exponent"]) ?? 1,
+            density: parseDouble(dict["density"]) ?? 1,
+            volumetricsExponent: parseDouble(dict["volumetricsexponent"]) ?? 1,
+            lightSourceSize: parseDouble(dict["lightsourcesize"]) ?? 0,
+            minimumDistance: parseDouble(dict["mindistance"]) ?? 0,
+            cascadeDistances: SIMD3<Double>(
+                parseDouble(dict["cascadedistance0"]) ?? 0,
+                parseDouble(dict["cascadedistance1"]) ?? 0,
+                parseDouble(dict["cascadedistance2"]) ?? 0
+            ),
+            lockTransforms: parseBool(dict["locktransforms"]) ?? false,
+            muteInEditor: parseBool(dict["muteineditor"]) ?? false,
+            noInterpolation: parseBool(dict["nointerpolation"]) ?? false,
+            disablePropagation: parseBool(dict["disablepropagation"]) ?? false,
+            solid: parseBool(dict["solid"]) ?? false,
+            dependencies: parseDependencyIDs(dict["dependencies"]),
+            fieldBindings: fieldBindings
+        )
+    }
+
+    private static func parseScriptHostObject(
+        _ dict: [String: Any],
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneScriptHostObject? {
+        guard let visibleDict = dict["visible"] as? [String: Any],
+              let script = visibleDict["script"] as? String, !script.isEmpty else {
+            return nil
+        }
+        let id = objectID(in: dict)
+            ?? (dict["name"] as? String)
+            ?? "script-host-\(abs(script.hashValue))"
+        let name = (dict["name"] as? String) ?? id
+        diagnostics.append(.init(
+            severity: .info,
+            message: "Object \(name) has a visible-script but no renderable image; runs as a SceneScript host"
+        ))
+        return WPESceneScriptHostObject(
+            id: id,
+            name: name,
+            visibleScript: script,
+            scriptProperties: scriptPropertyValues(visibleDict["scriptproperties"])
+        )
+    }
+
+    private static func indexObjectsByID(
+        _ rawObjects: [[String: Any]]
+    ) -> [String: [String: Any]] {
+        var objectsByID: [String: [String: Any]] = [:]
+        for object in rawObjects {
+            guard let id = objectID(in: object) else { continue }
+            objectsByID[id] = object
+        }
+        return objectsByID
+    }
+
+    /// OWN baked `visible` per object, groups included - not the effective value.
+    private static func objectHierarchy(
+        from objectsByID: [String: [String: Any]]
+    ) -> (parents: [String: String], ownVisibility: [String: Bool]) {
+        var parents: [String: String] = [:]
+        var ownVisibility: [String: Bool] = [:]
+        for (id, object) in objectsByID {
+            ownVisibility[id] = parseBool(object["visible"]) ?? true
+            if let parent = parentID(in: object), parent != id {
+                parents[id] = parent
+            }
+        }
+        return (parents, ownVisibility)
+    }
+
+    /// WPE allows `attachment` on a pure GROUP: the subtree rides the parent puppet's
+    /// anchor. Groups are baked away here, so lower it onto each descendant.
+    private static func inheritedGroupAttachments(
+        from objectsByID: [String: [String: Any]]
+    ) -> [String: (name: String, parentID: String)] {
+        var memo: [String: (name: String, parentID: String)?] = [:]
+
+        func inherited(groupID: String, stack: Set<String>) -> (name: String, parentID: String)? {
+            if let cached = memo[groupID] { return cached }
+            guard !stack.contains(groupID),
+                  let group = objectsByID[groupID],
+                  objectKindResolution(for: group).primary == .unknown else {
+                return nil
+            }
+            let resolved: (name: String, parentID: String)?
+            if let attachment = nonEmptyString(group["attachment"]) ?? nonEmptyString(group["anchor"]),
+               let groupParentID = parentID(in: group) {
+                resolved = (attachment, groupParentID)
+            } else if let parent = parentID(in: group) {
+                resolved = inherited(groupID: parent, stack: stack.union([groupID]))
+            } else {
+                resolved = nil
+            }
+            memo[groupID] = resolved
+            return resolved
+        }
+
+        var result: [String: (name: String, parentID: String)] = [:]
+        for (id, object) in objectsByID {
+            guard objectKindResolution(for: object).primary == .image,
+                  nonEmptyString(object["attachment"]) == nil,
+                  nonEmptyString(object["anchor"]) == nil,
+                  let parent = parentID(in: object) else { continue }
+            if let attachment = inherited(groupID: parent, stack: []) {
+                result[id] = attachment
+            }
+        }
+        return result
+    }
+
+    private static func extractUserPropertyBindings(in json: Any) -> [String: [WPEScenePropertyBinding]] {
+        guard let root = json as? [String: Any] else {
+            return [:]
+        }
+        let rawObjects = WPEValueParser.objectArray(root["objects"]) ?? []
+        var result: [String: [WPEScenePropertyBinding]] = [:]
+
+        func append(
+            raw: Any?,
+            target: WPEScenePropertyBindingTarget,
+            kind: WPEScenePropertyBindingKind,
+            action: WPEScenePropertyBindingAction,
+            includeNestedScriptProperties: Bool = true
+        ) {
+            let specs = (try? userPropertyBindingSpecs(
+                in: raw,
+                includeNestedScriptProperties: includeNestedScriptProperties
+            ))?.sorted { lhs, rhs in
+                if lhs.key != rhs.key { return lhs.key < rhs.key }
+                return (lhs.condition ?? "") < (rhs.condition ?? "")
+            } ?? []
+            for spec in specs {
+                result[spec.key, default: []].append(WPEScenePropertyBinding(
+                    propertyKey: spec.key,
+                    target: target,
+                    kind: kind,
+                    action: action,
+                    condition: spec.condition
+                ))
+            }
+        }
+
+        func appendScriptProperties(
+            in raw: Any?,
+            objectID: String,
+            role: WPESceneScriptPropertyRole,
+            subresourceID: String? = nil
+        ) {
+            guard let envelope = raw as? [String: Any],
+                  envelope["script"] is String,
+                  let properties = envelope["scriptproperties"] as? [String: Any] else {
+                return
+            }
+            for propertyName in properties.keys.sorted() {
+                append(
+                    raw: properties[propertyName],
+                    target: .scriptProperty(.init(
+                        objectID: objectID,
+                        role: role,
+                        propertyName: propertyName,
+                        subresourceID: subresourceID
+                    )),
+                    kind: .scriptProperty,
+                    action: .incremental
+                )
+            }
+        }
+
+        if let general = root["general"] as? [String: Any] {
+            let fields = [
+                "zoom", "perspectiveoverridefov", "camerashake",
+                "camerashakeamplitude", "camerashakespeed", "camerashakeroughness",
+                "clearenabled", "windenabled", "winddirection", "windstrength",
+                "gravitydirection", "gravitystrength"
+            ]
+            for field in fields {
+                append(
+                    raw: general[field],
+                    target: .generalField(name: field),
+                    kind: .general,
+                    action: .reload
+                )
+            }
+        }
+
+        for object in rawObjects {
+            guard let objectID = objectID(in: object) else { continue }
+            let objectKind = objectKindResolution(for: object).primary
+            appendScriptProperties(in: object["origin"], objectID: objectID, role: .origin)
+            appendScriptProperties(in: object["scale"], objectID: objectID, role: .scale)
+            appendScriptProperties(in: object["angles"], objectID: objectID, role: .angles)
+            appendScriptProperties(in: object["color"], objectID: objectID, role: .color)
+            switch objectKind {
+            case .image:
+                append(raw: object["visible"], target: .imageObject(id: objectID), kind: .visible, action: .incremental, includeNestedScriptProperties: false)
+                append(raw: object["color"], target: .imageObject(id: objectID), kind: .color, action: .reload, includeNestedScriptProperties: false)
+                append(raw: object["alpha"], target: .imageObject(id: objectID), kind: .alpha, action: .reload, includeNestedScriptProperties: false)
+                append(raw: object["brightness"], target: .imageObject(id: objectID), kind: .brightness, action: .reload)
+                append(raw: object["image"], target: .objectResource(objectID: objectID, field: "image"), kind: .resource, action: .reload)
+                append(raw: object["material"], target: .objectResource(objectID: objectID, field: "material"), kind: .resource, action: .reload)
+                appendScriptProperties(in: object["visible"], objectID: objectID, role: .layerVisible)
+                appendScriptProperties(in: object["alpha"], objectID: objectID, role: .layerAlpha)
+                if let effects = WPEValueParser.objectArray(object["effects"]) {
+                    for (effectIndex, effect) in effects.enumerated() {
+                        let effectIdentifier = effectID(in: effect, fallback: "\(effectIndex)")
+                        append(raw: effect["visible"], target: .imageEffect(objectID: objectID, effectID: effectIdentifier), kind: .visible, action: .reload, includeNestedScriptProperties: false)
+                        appendScriptProperties(
+                            in: effect["visible"],
+                            objectID: objectID,
+                            role: .effectVisible,
+                            subresourceID: effectIdentifier
+                        )
+                        if let passes = WPEValueParser.objectArray(effect["passes"]) {
+                            for (passIndex, pass) in passes.enumerated() {
+                                let passID = parseInt(pass["id"]) ?? passIndex
+                                forEachShaderConstant(in: pass["constantshadervalues"]) { name, raw in
+                                    append(
+                                        raw: raw,
+                                        target: .shaderUniform(objectID: objectID, effectID: effectIdentifier, passID: passID, name: name),
+                                        kind: .uniform,
+                                        action: .reload,
+                                        includeNestedScriptProperties: false
+                                    )
+                                    appendScriptProperties(
+                                        in: raw,
+                                        objectID: objectID,
+                                        role: .effectConstant,
+                                        subresourceID: "\(effectIdentifier):\(passID):\(name)"
+                                    )
+                                }
+                                if let combos = pass["combos"] as? [String: Any] {
+                                    for (name, raw) in combos {
+                                        append(raw: raw, target: .shaderCombo(objectID: objectID, effectID: effectIdentifier, passID: passID, name: name), kind: .combo, action: .reload)
+                                    }
+                                }
+                                if let textures = pass["textures"] as? [Any] {
+                                    for (index, raw) in textures.enumerated() {
+                                        append(raw: raw, target: .textureSlot(objectID: objectID, effectID: effectIdentifier, passID: passID, index: index), kind: .texture, action: .reload)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            case .text:
+                append(raw: object["visible"], target: .textObject(id: objectID), kind: .visible, action: .incremental, includeNestedScriptProperties: false)
+                append(raw: object["color"], target: .textObject(id: objectID), kind: .color, action: .reload, includeNestedScriptProperties: false)
+                append(raw: object["alpha"], target: .textObject(id: objectID), kind: .alpha, action: .reload, includeNestedScriptProperties: false)
+                appendScriptProperties(in: object["text"], objectID: objectID, role: .textContent)
+                appendScriptProperties(in: object["visible"], objectID: objectID, role: .textVisible)
+                appendScriptProperties(in: object["alpha"], objectID: objectID, role: .textAlpha)
+            case .particle:
+                append(raw: object["visible"], target: .particleObject(id: objectID), kind: .visible, action: .reload)
+                append(raw: object["color"], target: .particleObject(id: objectID), kind: .color, action: .reload)
+                append(raw: object["alpha"], target: .particleObject(id: objectID), kind: .alpha, action: .reload)
+            case .sound:
+                append(raw: object["visible"], target: .soundObject(id: objectID), kind: .visible, action: .incremental)
+                append(raw: object["volume"], target: .soundObject(id: objectID), kind: .volume, action: .incremental)
+            case .light:
+                for field in lightFieldNames {
+                    let kind: WPEScenePropertyBindingKind
+                    switch field {
+                    case "visible": kind = .visible
+                    case "color": kind = .color
+                    default: kind = .uniform
+                    }
+                    append(
+                        raw: object[field],
+                        target: .lightObject(id: objectID),
+                        kind: kind,
+                        action: .reload
+                    )
+                }
+            default:
+                // Pure SceneScript hosts land here as `.unknown`: they draw nothing but their
+                // visible script still consumes settings.
+                append(
+                    raw: object["visible"],
+                    target: .groupObject(id: objectID),
+                    kind: .visible,
+                    action: .reload,
+                    includeNestedScriptProperties: false
+                )
+                appendScriptProperties(in: object["visible"], objectID: objectID, role: .layerVisible)
+                break
+            }
+        }
+        return result
+    }
+
+    private static func effectID(in dict: [String: Any], fallback: String) -> String {
+        if let id = dict["id"] as? String, !id.isEmpty { return id }
+        if let id = parseInt(dict["id"]) { return String(id) }
+        if let name = dict["name"] as? String, !name.isEmpty { return name }
+        return fallback
+    }
+
+    /// `condition`: the literal the property must match for `value` to take effect;
+    /// nil for the simple form.
+    private struct UserPropertyBindingSpec: Hashable {
+        let key: String
+        let condition: String?
+    }
+
+    /// Both envelope forms: simple `{"user":K,"value":...}` and condition
+    /// `{"user":{"name":K,"condition":"2"},"value":...}` (style selectors).
+    private static func userPropertyBindingSpecs(
+        in raw: Any?,
+        depth: Int = 0,
+        includeNestedScriptProperties: Bool = true
+    ) throws -> Set<UserPropertyBindingSpec> {
+        guard depth < 100 else {
+            throw WPESceneDocumentError.malformedField("scene.json is too deeply nested")
+        }
+        guard let raw else { return [] }
+        if let array = raw as? [Any] {
+            return try array.reduce(into: Set<UserPropertyBindingSpec>()) { specs, value in
+                specs.formUnion(try userPropertyBindingSpecs(
+                    in: value,
+                    depth: depth + 1,
+                    includeNestedScriptProperties: includeNestedScriptProperties
+                ))
+            }
+        }
+        guard let dict = raw as? [String: Any] else { return [] }
+        var specs = Set<UserPropertyBindingSpec>()
+        if dict.keys.contains("value") {
+            if let key = dict["user"] as? String {
+                specs.insert(UserPropertyBindingSpec(key: key, condition: nil))
+            } else if let user = dict["user"] as? [String: Any],
+                      let name = user["name"] as? String, !name.isEmpty {
+                specs.insert(UserPropertyBindingSpec(
+                    key: name,
+                    condition: conditionString(from: user["condition"])
+                ))
+            }
+        }
+        for (key, value) in dict {
+            if !includeNestedScriptProperties,
+               key.caseInsensitiveCompare("scriptproperties") == .orderedSame {
+                continue
+            }
+            specs.formUnion(try userPropertyBindingSpecs(
+                in: value,
+                depth: depth + 1,
+                includeNestedScriptProperties: includeNestedScriptProperties
+            ))
+        }
+        return specs
+    }
+
+    /// Integral numbers render without a trailing `.0` so a combo value of 2 matches
+    /// condition "2"; JSON booleans stay distinct from numerics.
+    private static func conditionString(from raw: Any?) -> String? {
+        if let value = raw as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let number = raw as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            // Not `Int(double)`: it would trap on a finite but out-of-Int-range literal
+            // from external scene JSON.
+            return number.stringValue
+        }
+        return nil
+    }
+
+    private static func resolvedObjectTransforms(
+        _ objectsByID: [String: [String: Any]],
+        scriptOrigins: [String: SIMD3<Double>] = [:]
+    ) -> [String: SceneObjectTransform] {
+        var memo: [String: SceneObjectTransform] = [:]
+
+        func resolve(id: String, stack: Set<String>) -> SceneObjectTransform {
+            if let cached = memo[id] { return cached }
+            guard let object = objectsByID[id] else { return .identity }
+            let local = localTransform(in: object, scriptOrigins: scriptOrigins)
+            guard let parent = parentID(in: object),
+                  parent != id,
+                  objectsByID[parent] != nil,
+                  !stack.contains(parent) else {
+                memo[id] = local
+                return local
+            }
+            guard stack.count < 100 else {
+                memo[id] = local
+                return local
+            }
+            let inherited = resolve(id: parent, stack: stack.union([id]))
+            let resolved = inherited.combining(child: local)
+            memo[id] = resolved
+            return resolved
+        }
+
+        for id in objectsByID.keys {
+            _ = resolve(id: id, stack: [])
+        }
+        return memo
+    }
+
+    private static func objectID(in dict: [String: Any]) -> String? {
+        if let id = dict["id"] as? String, !id.isEmpty {
+            return id
+        }
+        if let id = parseInt(dict["id"]) {
+            return String(id)
+        }
+        if let name = dict["name"] as? String, !name.isEmpty {
+            return name
+        }
+        return nil
+    }
+
+    private static func parentID(in dict: [String: Any]) -> String? {
+        if let id = dict["parent"] as? String, !id.isEmpty { return id }
+        if let id = parseInt(dict["parent"]) { return String(id) }
+        return nil
+    }
+
+    /// `WPEValueParser.vector3` unwraps a `{user,value}` envelope itself but the scalar
+    /// path does not, so a property-bound uniform scale would default to 1.
+    private static func resolveBoundTransformValue(_ raw: Any?) -> Any? {
+        if let dict = raw as? [String: Any], let value = dict["value"] {
+            return value
+        }
+        return raw
+    }
+
+    private static func localTransform(
+        in dict: [String: Any],
+        scriptOrigins: [String: SIMD3<Double>] = [:]
+    ) -> SceneObjectTransform {
+        // A script-resolved origin (computed from current user values) replaces the
+        // stale baked `value` at the LOCAL level, so parent combination is unchanged.
+        let origin: SIMD3<Double>
+        if let id = objectID(in: dict), let scripted = scriptOrigins[id] {
+            origin = scripted
+        } else {
+            origin = parseVector3(resolveBoundTransformValue(dict["origin"])) ?? SIMD3<Double>(0, 0, 0)
+        }
+        return SceneObjectTransform(
+            origin: origin,
+            scale: parseScale(dict["scale"]),
+            angles: parseVector3(resolveBoundTransformValue(dict["angles"])) ?? SIMD3<Double>(0, 0, 0)
+        )
+    }
+
+    /// Resolves each object's visibility as its own value combined with every ancestor, including non-renderable groups.
+    private static func resolvedObjectVisibility(
+        _ objectsByID: [String: [String: Any]]
+    ) -> [String: Bool] {
+        var memo: [String: Bool] = [:]
+
+        func resolve(id: String, stack: Set<String>) -> Bool {
+            if let cached = memo[id] { return cached }
+            guard let object = objectsByID[id] else { return true }
+            let own = parseBool(object["visible"]) ?? true
+            guard own else { memo[id] = false; return false }
+            guard let parent = parentID(in: object),
+                  parent != id,
+                  objectsByID[parent] != nil,
+                  !stack.contains(parent) else {
+                memo[id] = own
+                return own
+            }
+            guard stack.count < 100 else {
+                memo[id] = own
+                return own
+            }
+            let effective = own && resolve(id: parent, stack: stack.union([id]))
+            memo[id] = effective
+            return effective
+        }
+
+        for id in objectsByID.keys {
+            _ = resolve(id: id, stack: [])
+        }
+        return memo
+    }
+
+    /// Keyed by object id, LOCAL origin only. Absent = no script or a dynamic one,
+    /// so the baked value stands.
+    private static func resolveScriptOrigins(
+        _ rawObjects: [[String: Any]],
+        canvasWidth: Double,
+        canvasHeight: Double,
+        makeResolver: (Double, Double) -> any WPESceneTransformScriptResolving
+    ) -> [String: SIMD3<Double>] {
+        var pending: [(id: String, script: String, properties: [String: WPESceneScriptPropertyValue], seed: SIMD3<Double>)] = []
+        for object in rawObjects {
+            guard let id = objectID(in: object),
+                  let origin = object["origin"] as? [String: Any],
+                  let script = origin["script"] as? String, !script.isEmpty,
+                  WPETransformScriptStaticAnalysis.isStaticallyResolvable(script) else { continue }
+            let properties = scriptPropertyValues(origin["scriptproperties"])
+            let seed = parseVector3(resolveBoundTransformValue(origin["value"])) ?? SIMD3<Double>(0, 0, 0)
+            pending.append((id, script, properties, seed))
+        }
+        guard !pending.isEmpty else { return [:] }
+
+        let evaluator = makeResolver(canvasWidth, canvasHeight)
+        var resolved: [String: SIMD3<Double>] = [:]
+        resolved.reserveCapacity(pending.count)
+        let requests = pending.map {
+            WPESceneTransformScriptRequest(
+                script: $0.script,
+                properties: $0.properties,
+                seed: $0.seed
+            )
+        }
+        let outputs = evaluator.resolveBatch(requests)
+        for (item, origin) in zip(pending, outputs) {
+            if let origin {
+                resolved[item.id] = origin
+            }
+        }
+        return resolved
+    }
+
+    /// The `{ "value": X }` fallback covers an un-overridden binding; bools stay bools
+    /// so checkbox-driven branches still work.
+    private static func scriptPropertyValues(_ raw: Any?) -> [String: WPESceneScriptPropertyValue] {
+        guard let dict = raw as? [String: Any] else { return [:] }
+        var properties: [String: WPESceneScriptPropertyValue] = [:]
+        for (key, value) in dict {
+            if let resolved = scriptPropertyValue(value) {
+                properties[key] = resolved
+            }
+        }
+        return properties
+    }
+
+    private static func scriptPropertyValue(_ raw: Any?) -> WPESceneScriptPropertyValue? {
+        if let dict = raw as? [String: Any], let inner = dict["value"] {
+            return scriptPropertyValue(inner)
+        }
+        if let number = raw as? NSNumber {
+            // CFBoolean is an NSNumber subtype; JSON true/false must stay a bool
+            // rather than collapse to 1/0 so checkbox-driven branches still work.
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .bool(number.boolValue)
+            }
+            return .number(number.doubleValue)
+        }
+        if let string = raw as? String {
+            if let number = parseDouble(string) { return .number(number) }
+            return .string(string)
+        }
+        return nil
+    }
+
+    /// Scale may be a vector, a `{user,value}` binding, or a lone uniform scalar;
+    /// `parseVector3` returns nil for the scalar, so coerce it to all axes.
+    private static func parseScale(_ raw: Any?) -> SIMD3<Double> {
+        let resolved = resolveBoundTransformValue(raw)
+        if let vector = parseVector3(resolved) { return vector }
+        if let scalar = parseDouble(resolved) { return SIMD3<Double>(scalar, scalar, scalar) }
+        return SIMD3<Double>(1, 1, 1)
+    }
+
+    private static func parseSoundObject(
+        _ dict: [String: Any],
+        authored rawDict: [String: Any],
+        effectiveVisible: Bool? = nil,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneSoundObject? {
+        var paths: [String] = []
+        if let single = dict["sound"] as? String, !single.isEmpty {
+            paths.append(single)
+        } else if let array = dict["sound"] as? [Any] {
+            for value in array {
+                if let s = value as? String, !s.isEmpty {
+                    paths.append(s)
+                }
+            }
+        }
+        guard !paths.isEmpty else {
+            let objectName = dict["name"] as? String ?? "?"
+            diagnostics.append(.init(
+                severity: .warning,
+                message: String(
+                    localized: "Sound object \(objectName) has no sound files",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic. The placeholder is the sound object name."
+                )
+            ))
+            return nil
+        }
+        let id = (dict["id"] as? String)
+            ?? (dict["id"] as? Int).map(String.init)
+            ?? (dict["name"] as? String)
+            ?? paths[0]
+        let name = (dict["name"] as? String) ?? id
+        let volumeField = preservedDoubleField(
+            authored: rawDict["volume"],
+            resolved: dict["volume"],
+            defaultValue: 1
+        )
+        let visibleField = preservedBoolField(
+            authored: rawDict["visible"],
+            resolved: dict["visible"],
+            defaultValue: true
+        )
+        let mode = (dict["playbackmode"] as? String) ?? "loop"
+        let startSilent = (dict["startsilent"] as? Bool) ?? false
+        return WPESceneSoundObject(
+            id: id,
+            name: name,
+            soundRelativePaths: paths,
+            volume: max(0, min(volumeField.resolvedValue, 1)),
+            playbackMode: mode.lowercased(),
+            startSilent: startSilent,
+            visible: effectiveVisible ?? visibleField.resolvedValue,
+            volumeField: volumeField,
+            visibleField: visibleField
+        )
+    }
+
+    private static func parseTextObject(
+        _ dict: [String: Any],
+        transform: SceneObjectTransform,
+        localOrigin: SIMD3<Double>? = nil,
+        localScale: SIMD3<Double>? = nil,
+        parentObjectID: String? = nil,
+        effectiveVisible: Bool? = nil,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneTextObject? {
+        let raw = dict["text"]
+        let authoredText: String?
+        var textScript: String?
+        var textScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        switch raw {
+        case let value as String:
+            authoredText = value
+        case let nested as [String: Any]:
+            authoredText = (nested["value"] as? String) ?? (nested["text"] as? String)
+            if let script = nested["script"] as? String, !script.isEmpty {
+                textScript = script
+                textScriptProperties = scriptPropertyValues(nested["scriptproperties"])
+            }
+        default:
+            authoredText = nil
+        }
+        // WPE runs a text script regardless of the authored value, so only SCRIPTLESS
+        // objects with no resolvable text are dropped.
+        guard authoredText?.isEmpty == false || textScript != nil else {
+            let objectName = dict["name"] as? String ?? "?"
+            diagnostics.append(.init(
+                severity: .warning,
+                message: String(
+                    localized: "Text object \(objectName) has no resolvable text",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic. The placeholder is the text object name."
+                )
+            ))
+            return nil
+        }
+        let text = authoredText ?? ""
+        let id = (dict["id"] as? String)
+            ?? (dict["id"] as? Int).map(String.init)
+            ?? (dict["name"] as? String)
+            ?? text
+        let name = (dict["name"] as? String) ?? id
+        let font = unwrapString(dict["font"])
+        let pointSize = unwrapDouble(dict["pointsize"]) ?? unwrapDouble(dict["fontsize"]) ?? 32
+        let color = unwrapVector3(dict["color"]) ?? SIMD3<Double>(1, 1, 1)
+        // WPE modulates text with the generic object `brightness` too.
+        let brightness = unwrapDouble(dict["brightness"]) ?? 1.0
+        let alphaValue = parseAnimatedScalar(dict["alpha"], fallback: 1)
+        // The renderer ticks these; the baked value above is only the seed.
+        var alphaScript: String?
+        var alphaScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        if let alphaDict = dict["alpha"] as? [String: Any],
+           let script = alphaDict["script"] as? String, !script.isEmpty {
+            alphaScript = script
+            alphaScriptProperties = scriptPropertyValues(alphaDict["scriptproperties"])
+        }
+        var visibleScript: String?
+        var visibleScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        if let visibleDict = dict["visible"] as? [String: Any],
+           let script = visibleDict["script"] as? String, !script.isEmpty {
+            visibleScript = script
+            visibleScriptProperties = scriptPropertyValues(visibleDict["scriptproperties"])
+        }
+        let origin = transform.origin
+        let scale = transform.scale
+        let angles = transform.angles
+        let visible = effectiveVisible ?? (parseBool(dict["visible"]) ?? true)
+        let horiz = unwrapString(dict["horizontalalign"]) ?? "center"
+        let vert = unwrapString(dict["verticalalign"]) ?? "middle"
+        // `maxwidth` binds only while `limitwidth` is on; off (the default) is unbounded.
+        let limitWidth = parseBool(dict["limitwidth"]) ?? false
+        let maxWidth = limitWidth ? unwrapDouble(dict["maxwidth"]) : nil
+        // Same gating for rows: `maxrows` binds only while `limitrows` is on.
+        let limitRows = parseBool(dict["limitrows"]) ?? false
+        let maxRows = limitRows ? parseInt(dict["maxrows"]).map { Swift.max(1, $0) } : nil
+        let limitUseEllipsis = parseBool(dict["limituseellipsis"]) ?? false
+        let parallaxDepth = parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"])
+        // An editor bounding-box snapshot, never laid out against: glyphs render at
+        // pointsize x 300/72 anchored to `origin`. Parsed only for SceneScript's `layer.size`.
+        let boxSize = parseVector3(dict["size"]).map { SIMD2<Double>($0.x, $0.y) }
+        let padding = parseDouble(dict["padding"]) ?? 0
+        let copyBackground = parseBool(dict["copybackground"]) ?? false
+        let opaqueBackground = parseBool(dict["opaquebackground"]) ?? false
+        let backgroundColor = unwrapVector3(dict["backgroundcolor"]) ?? SIMD3<Double>(0, 0, 0)
+        let backgroundBrightness = unwrapDouble(dict["backgroundbrightness"]) ?? 1
+        // WPE runs a text object's effect chain over the rendered glyphs, as for an image.
+        let effects = parseImageEffects(dict["effects"], imageName: name, diagnostics: &diagnostics)
+        // WPE ignores the legacy scalar `letterspacing` key.
+        let spacing = parseVector3(dict["spacing"]).map { SIMD2<Double>($0.x, $0.y) } ?? .zero
+
+        return WPESceneTextObject(
+            id: id,
+            name: name,
+            text: text,
+            textScript: textScript,
+            scriptProperties: textScriptProperties,
+            fontRelativePath: font,
+            pointSize: max(1, pointSize),
+            color: color,
+            brightness: max(0, brightness),
+            alpha: max(0, min(alphaValue.value, 1)),
+            alphaAnimation: alphaValue.animation,
+            origin: origin,
+            scale: scale,
+            angles: angles,
+            visible: visible,
+            horizontalAlignment: horiz.lowercased(),
+            verticalAlignment: vert.lowercased(),
+            maxWidth: maxWidth.map { max(1, $0) },
+            maxRows: maxRows,
+            limitUseEllipsis: limitUseEllipsis,
+            parallaxDepth: parallaxDepth,
+            boxSize: (boxSize.map { $0.x > 0 && $0.y > 0 } ?? false) ? boxSize : nil,
+            padding: max(0, padding),
+            copyBackground: copyBackground,
+            opaqueBackground: opaqueBackground,
+            backgroundColor: backgroundColor,
+            backgroundBrightness: max(0, backgroundBrightness),
+            effects: effects,
+            spacing: spacing,
+            parentObjectID: parentObjectID,
+            localOrigin: localOrigin,
+            localScale: localScale,
+            alphaScript: alphaScript,
+            alphaScriptProperties: alphaScriptProperties,
+            visibleScript: visibleScript,
+            visibleScriptProperties: visibleScriptProperties,
+            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false),
+            colorScript: dynamicTransformScript(in: dict["color"], preserveStaticallyResolvable: true),
+            scaleScript: dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true),
+            anglesScript: dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true)
+        )
+    }
+
+    /// Replaces `{ "user": K, "value": V }` with `userValues[K] ?? V`, and must run
+    /// BEFORE field parsing.
+    private static func resolveUserPropertyEnvelopes(
+        in raw: Any,
+        userValues: [String: WallpaperEngineProjectPropertyValue],
+        depth: Int = 0
+    ) throws -> Any {
+        guard depth < 100 else {
+            throw WPESceneDocumentError.malformedField("scene.json is too deeply nested")
+        }
+        if let array = raw as? [Any] {
+            return try array.map {
+                try resolveUserPropertyEnvelopes(in: $0, userValues: userValues, depth: depth + 1)
+            }
+        }
+
+        guard let dict = raw as? [String: Any] else {
+            return raw
+        }
+
+        // In a `script` field the `user`/`value` pair is the script's own enable binding,
+        // not a plain envelope: collapsing it to `value` would discard the script.
+        if let script = dict["script"] as? String, !script.isEmpty {
+            var resolved: [String: Any] = [:]
+            resolved.reserveCapacity(dict.count)
+            for (key, value) in dict {
+                resolved[key] = try resolveUserPropertyEnvelopes(in: value, userValues: userValues, depth: depth + 1)
+            }
+            // `value` is the *disabled* state, so the gate must still be evaluated or a
+            // satisfied gate would start switched off with nothing able to turn it on.
+            if let gate = conditionGate(in: dict, userValues: userValues) {
+                resolved["value"] = gate
+            }
+            return resolved
+        }
+
+        if let key = dict["user"] as? String,
+           dict.keys.contains("value") {
+            let fallback = try resolveUserPropertyEnvelopes(
+                in: dict["value"] ?? NSNull(),
+                userValues: userValues,
+                depth: depth + 1
+            )
+            guard let override = userValues[key] else {
+                return fallback
+            }
+            return jsonValue(for: override)
+        }
+
+        // Condition form (style selector) `{"user":{"name":K,"condition":"2"},"value":false}`:
+        // the field applies only while `userValues[K]` matches the condition literal.
+        if let user = dict["user"] as? [String: Any],
+           let name = user["name"] as? String, !name.isEmpty,
+           dict.keys.contains("value") {
+            let fallback = try resolveUserPropertyEnvelopes(
+                in: dict["value"] ?? NSNull(),
+                userValues: userValues,
+                depth: depth + 1
+            )
+            guard let override = userValues[name] else {
+                return fallback
+            }
+            guard let condition = conditionString(from: user["condition"]) else {
+                // Nested user with a name but no condition → the property drives
+                // the value directly, like the simple form.
+                return jsonValue(for: override)
+            }
+            // Gate to a Bool only for a genuine JSON boolean: `strictBool` rejects numeric
+            // NSNumbers so a condition-form scalar or vector is returned untouched.
+            guard WPEValueParser.strictBool(fallback) != nil else {
+                return fallback
+            }
+            return override.looselyMatches(.conditionLiteral(condition))
+        }
+
+        var resolved: [String: Any] = [:]
+        resolved.reserveCapacity(dict.count)
+        for (key, value) in dict {
+            resolved[key] = try resolveUserPropertyEnvelopes(
+                in: value,
+                userValues: userValues,
+                depth: depth + 1
+            )
+        }
+        return resolved
+    }
+
+    /// nil = no condition gate, or the current values cannot decide it; the caller's
+    /// own fallback then stands.
+    private static func conditionGate(
+        in dict: [String: Any],
+        userValues: [String: WallpaperEngineProjectPropertyValue]
+    ) -> Bool? {
+        guard let user = dict["user"] as? [String: Any],
+              let name = user["name"] as? String, !name.isEmpty,
+              // Only a genuine boolean field is a gate; a condition-form
+              // envelope around a scalar (alpha, scale) means something else.
+              WPEValueParser.strictBool(dict["value"]) != nil,
+              let condition = conditionString(from: user["condition"]),
+              let override = userValues[name] else {
+            return nil
+        }
+        return override.looselyMatches(.conditionLiteral(condition))
+    }
+
+    private static func jsonValue(for value: WallpaperEngineProjectPropertyValue) -> Any {
+        switch value {
+        case .bool(let value): return value
+        case .number(let value): return value
+        case .string(let value): return value
+        }
+    }
+
+    /// Accept legacy `{ "value": <X> }` wrappers. User-property envelopes are
+    /// resolved before field parsing so these helpers only see effective values.
+    private static func unwrapDouble(_ raw: Any?) -> Double? {
+        if let value = WPEValueParser.double(raw) { return value }
+        if let dict = raw as? [String: Any] {
+            return unwrapDouble(dict["value"])
+        }
+        return nil
+    }
+
+    private static func unwrapVector3(_ raw: Any?) -> SIMD3<Double>? {
+        if let value = WPEValueParser.vector3(raw) { return value }
+        if let dict = raw as? [String: Any] {
+            return unwrapVector3(dict["value"])
+        }
+        return nil
+    }
+
+    private static func unwrapString(_ raw: Any?) -> String? {
+        if let s = raw as? String, !s.isEmpty { return s }
+        if let dict = raw as? [String: Any] {
+            return unwrapString(dict["value"])
+        }
+        return nil
+    }
+
+    private static func parseAnimatedScalar(
+        _ raw: Any?,
+        fallback: Double
+    ) -> (value: Double, animation: WPESceneAnimatedValue?) {
+        guard let constant = WPEValueParser.shaderConstant(raw) else {
+            return (parseDouble(raw) ?? fallback, nil)
+        }
+        switch constant {
+        case .number(let value):
+            return (value, nil)
+        case .vector(let vector):
+            return (vector.first ?? fallback, nil)
+        case .bool(let value):
+            return (value ? 1 : 0, nil)
+        case .string(let value):
+            return (parseDouble(value) ?? fallback, nil)
+        case .animated(let value):
+            return (value.scalarFallback ?? value.scalar(at: 0) ?? fallback, value)
+        }
+    }
+
+    private static func parseParticleObject(
+        _ dict: [String: Any],
+        transform: SceneObjectTransform,
+        effectiveVisible: Bool? = nil,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneParticleObject? {
+        guard let path = dict["particle"] as? String, !path.isEmpty else {
+            let objectName = dict["name"] as? String ?? "?"
+            diagnostics.append(.init(
+                severity: .warning,
+                message: String(
+                    localized: "Particle object \(objectName) has no particle file",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic. The placeholder is the particle object name."
+                )
+            ))
+            return nil
+        }
+        let id = (dict["id"] as? String)
+            ?? (dict["id"] as? Int).map(String.init)
+            ?? (dict["name"] as? String)
+            ?? path
+        let name = (dict["name"] as? String) ?? id
+        let origin = transform.origin
+        let scale = transform.scale
+        let angles = transform.angles
+        let visible = effectiveVisible ?? (parseBool(dict["visible"]) ?? true)
+        let alphaValue = parseAnimatedScalar(dict["alpha"], fallback: 1)
+        let color = parseVector3(dict["color"]) ?? SIMD3<Double>(1, 1, 1)
+        let brightness = parseDouble(dict["brightness"]) ?? 1.0
+        let parallaxDepth = parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"])
+        let instanceOverride = parseParticleInstanceOverride(
+            dict["instanceoverride"] ?? dict["instanceOverride"]
+        )
+        return WPESceneParticleObject(
+            id: id,
+            name: name,
+            parentObjectID: parentID(in: dict),
+            particleRelativePath: path,
+            origin: origin,
+            scale: scale,
+            angles: angles,
+            visible: visible,
+            alpha: alphaValue.value,
+            alphaAnimation: alphaValue.animation,
+            color: color,
+            brightness: brightness,
+            parallaxDepth: parallaxDepth,
+            instanceOverride: instanceOverride
+        )
+    }
+
+    private static func parseParticleInstanceOverride(_ raw: Any?) -> WPESceneParticleInstanceOverride? {
+        guard let dict = raw as? [String: Any] else { return nil }
+        /// An override is either a bare value or a `{ "user", "value" }` wrapper; without
+        /// the unwrap the user-bound ones are silently dropped.
+        func unwrap(_ key: String) -> Any? {
+            let v = dict[key]
+            if let inner = (v as? [String: Any])?["value"] { return inner }
+            return v
+        }
+        // Third envelope shape `{ "script", "value" }`: `unwrap` above returns only the
+        // seed, so a scripted override has to be pulled out here.
+        var alphaScript: String?
+        var alphaScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        if let alphaDict = dict["alpha"] as? [String: Any],
+           let script = alphaDict["script"] as? String, !script.isEmpty {
+            alphaScript = script
+            alphaScriptProperties = scriptPropertyValues(alphaDict["scriptproperties"])
+        }
+        let value = WPESceneParticleInstanceOverride(
+            count: parseDouble(unwrap("count")),
+            rate: parseDouble(unwrap("rate")),
+            lifetime: parseDouble(unwrap("lifetime")),
+            size: parseDouble(unwrap("size")),
+            speed: parseDouble(unwrap("speed")),
+            alpha: parseDouble(unwrap("alpha")),
+            brightness: parseDouble(unwrap("brightness")),
+            color: parseNormalizedParticleColor(unwrap("colorn")) ?? parseVector3(unwrap("color")),
+            alphaAnimation: WPEValueParser.animatedValue(dict["alpha"]),
+            controlPointOffsets: parseInstanceControlPoints(dict),
+            alphaScript: alphaScript,
+            alphaScriptProperties: alphaScriptProperties
+        )
+        return value.count == nil
+            && value.rate == nil
+            && value.lifetime == nil
+            && value.size == nil
+            && value.speed == nil
+            && value.alpha == nil
+            && value.brightness == nil
+            && value.color == nil
+            && value.alphaAnimation == nil
+            && value.controlPointOffsets.isEmpty
+            && value.alphaScript == nil
+            ? nil
+            : value
+    }
+
+    /// `controlpointangleN` are orientations, not offsets, and are skipped on purpose.
+    private static func parseInstanceControlPoints(_ dict: [String: Any]) -> [Int: SIMD3<Double>] {
+        var offsets: [Int: SIMD3<Double>] = [:]
+        for (key, raw) in dict {
+            let lowered = key.lowercased()
+            guard lowered.hasPrefix("controlpoint"),
+                  !lowered.hasPrefix("controlpointangle"),
+                  let index = Int(lowered.dropFirst("controlpoint".count)),
+                  let offset = unwrapVector3(raw) else { continue }
+            offsets[index] = offset
+        }
+        return offsets
+    }
+
+    private static func parseNormalizedParticleColor(_ raw: Any?) -> SIMD3<Double>? {
+        guard let color = parseVector3(raw) else { return nil }
+        return SIMD3<Double>(
+            color.x * 255,
+            color.y * 255,
+            color.z * 255
+        )
+    }
+
+    private static func objectKindResolution(for entry: [String: Any]) -> WPESceneObjectKindResolution {
+        let candidates = shapeCandidates(in: entry)
+        if let explicit = (entry["type"] as? String)?.lowercased(), !explicit.isEmpty {
+            return WPESceneObjectKindResolution(
+                primary: objectKind(explicitType: explicit),
+                candidates: candidates,
+                explicitType: explicit
+            )
+        }
+        if candidates.contains(.image) {
+            return WPESceneObjectKindResolution(primary: .image, candidates: candidates, explicitType: nil)
+        }
+        return WPESceneObjectKindResolution(primary: candidates.first ?? .unknown, candidates: candidates, explicitType: nil)
+    }
+
+    private static func objectKind(explicitType: String) -> WPESceneObjectKind {
+        switch explicitType {
+        case "image", "model": return .image
+        case "sound": return .sound
+        case "particle": return .particle
+        case "text": return .text
+        case "light": return .light
+        default: return .unknown
+        }
+    }
+
+    /// JSON `null` bridges to non-nil `NSNull`, so a bare `entry[key] != nil` would
+    /// classify `{"image": null}` as image-kind and drop its transform onto children.
+    private static func hasValue(_ entry: [String: Any], _ key: String) -> Bool {
+        guard let value = entry[key] else { return false }
+        return !(value is NSNull)
+    }
+
+    private static func shapeCandidates(in entry: [String: Any]) -> [WPESceneObjectKind] {
+        var kinds: [WPESceneObjectKind] = []
+        if hasValue(entry, "image") || hasValue(entry, "model") { kinds.append(.image) }
+        // A `shape: "quad"` layer carries no image — it is a bare geometry surface
+        // for a DIRECTDRAW effect (e.g. lightshafts light beams). Treat it as an
+        // image-kind layer; `parseImageObject` synthesizes a transparent solid
+        // base so the effect chain still renders.
+        if isShapeQuadLayer(entry) { kinds.append(.image) }
+        if hasValue(entry, "sound") { kinds.append(.sound) }
+        if hasValue(entry, "particle") { kinds.append(.particle) }
+        if hasValue(entry, "text") { kinds.append(.text) }
+        if hasValue(entry, "light") { kinds.append(.light) }
+        return kinds
+    }
+
+    /// WPE draws these as a 4-corner perspective quad fed by an effect's
+    /// `EffectPerspectiveUV` points.
+    private static func isShapeQuadLayer(_ entry: [String: Any]) -> Bool {
+        guard !hasValue(entry, "image"), !hasValue(entry, "model") else { return false }
+        return (entry["shape"] as? String)?.lowercased() == "quad"
+    }
+
+    // MARK: - Camera
+
+    private static func parseAuthoredCameraMetadata(
+        _ dict: [String: Any]
+    ) -> WPESceneAuthoredCamera {
+        WPESceneAuthoredCamera(
+            sourceJSON: WPESceneJSONValue(jsonValue: dict) ?? .object([:]),
+            paths: authoredJSONField(in: dict, key: "paths") { raw in
+                guard let values = raw as? [Any] else { return nil }
+                var paths: [String] = []
+                paths.reserveCapacity(values.count)
+                for value in values {
+                    guard let path = value as? String else { return nil }
+                    paths.append(path)
+                }
+                return paths
+            }
+        )
+    }
+
+    private static func parseAuthoredCameraObjects(
+        _ objects: [[String: Any]]
+    ) -> [WPESceneAuthoredCameraObject] {
+        objects.enumerated().compactMap { index, entry in
+            // Presence, rather than a successful String cast, is deliberate:
+            // malformed/null camera discriminators still belong in the lossless IR.
+            guard entry.keys.contains("camera") else { return nil }
+            return WPESceneAuthoredCameraObject(
+                sourceObjectIndex: index,
+                sourceJSON: WPESceneJSONValue(jsonValue: entry) ?? .object([:]),
+                camera: authoredJSONField(in: entry, key: "camera") { $0 as? String },
+                path: authoredJSONField(in: entry, key: "path") { $0 as? String },
+                queueMode: authoredJSONField(in: entry, key: "queuemode") { $0 as? String },
+                origin: authoredJSONField(in: entry, key: "origin", parse: cameraVector3),
+                angles: authoredJSONField(in: entry, key: "angles", parse: cameraVector3),
+                fov: authoredJSONField(in: entry, key: "fov", parse: cameraDouble),
+                zoom: authoredJSONField(in: entry, key: "zoom", parse: cameraDouble)
+            )
+        }
+    }
+
+    /// Camera scalars/vectors may use the usual authored `{value, user, script}`
+    /// envelope. Decode its seed while `sourceJSON` retains the complete envelope.
+    private static func cameraVector3(_ raw: Any) -> SIMD3<Double>? {
+        WPEValueParser.vector3(raw)
+    }
+
+    private static func cameraDouble(_ raw: Any) -> Double? {
+        if let dict = raw as? [String: Any], dict.keys.contains("value") {
+            return WPEValueParser.double(dict["value"])
+        }
+        return WPEValueParser.double(raw)
+    }
+
+    private static func authoredJSONField<Value: Equatable & Sendable>(
+        in dict: [String: Any],
+        key: String,
+        parse: (Any) -> Value?
+    ) -> WPESceneAuthoredJSONField<Value>? {
+        guard dict.keys.contains(key), let raw = dict[key] else { return nil }
+        if raw is NSNull { return .null }
+        if let value = parse(raw) { return .value(value) }
+        guard let preserved = WPESceneJSONValue(jsonValue: raw) else { return nil }
+        return .unparsed(preserved)
+    }
+
+    private static func parseCamera(
+        _ dict: [String: Any],
+        general: [String: Any]
+    ) -> WPESceneCamera {
+        let center = parseVector3(dict["center"]) ?? WPESceneCamera.defaultCamera.center
+        let eye = parseVector3(dict["eye"]) ?? WPESceneCamera.defaultCamera.eye
+        let up = parseVector3(dict["up"]) ?? WPESceneCamera.defaultCamera.up
+        let nearZ = parseDouble(dict["nearz"])
+            ?? parseDouble(general["nearz"])
+            ?? WPESceneCamera.defaultCamera.nearZ
+        let farZ = parseDouble(dict["farz"])
+            ?? parseDouble(general["farz"])
+            ?? WPESceneCamera.defaultCamera.farZ
+        let fov = parseDouble(dict["fov"])
+            ?? parseDouble(general["fov"])
+            ?? WPESceneCamera.defaultCamera.fov
+        return WPESceneCamera(center: center, eye: eye, up: up, nearZ: nearZ, farZ: farZ, fov: fov)
+    }
+
+    private static func parseCameraMotion(
+        _ objects: [[String: Any]],
+        scriptOrigins: [String: SIMD3<Double>]
+    ) -> WPESceneCameraMotion? {
+        guard let entry = objects.last(where: { $0["camera"] is String && (parseBool($0["visible"]) ?? true) }) else { return nil }
+        let animation = (entry["origin"] as? [String: Any])?["animation"] as? [String: Any]
+        let options = animation?["options"] as? [String: Any]
+        let parent = options?["parent"] as? [String: Any]
+        let parsedOriginAnimation = WPEValueParser.animatedValue(entry["origin"])
+        // Unlike other objects' sparse Vec3 tracks, a camera origin animates only when all three channels exist.
+        let originAnimation = parsedOriginAnimation.flatMap { animated in
+            animated.animation.tracks.count == 3 && animated.animation.tracks.allSatisfy { !$0.isEmpty } ? animated : nil
+        }
+        let parsedAnglesAnimation = WPEValueParser.animatedValue(entry["angles"])
+        let anglesAnimation = parsedAnglesAnimation.flatMap { animated in
+            animated.animation.tracks.count == 3 && animated.animation.tracks.allSatisfy { !$0.isEmpty } ? animated : nil
+        }
+        let zoom = entry["zoom"].flatMap(cameraDouble) ?? 1
+        let zoomScript: WPESceneTransformScript? = (entry["zoom"] as? [String: Any]).flatMap { value in
+            guard let script = value["script"] as? String, !script.isEmpty else { return nil }
+            return .init(script: script, scriptProperties: scriptPropertyValues(value["scriptproperties"]), seed: SIMD3(repeating: zoom))
+        }
+        return WPESceneCameraMotion(
+            objectID: (entry["id"] as? String) ?? String(WPEValueParser.int(entry["id"]) ?? 0),
+            origin: localTransform(in: entry, scriptOrigins: scriptOrigins).origin,
+            zoom: zoom,
+            originAnimation: originAnimation,
+            zoomAnimation: WPEValueParser.animatedValue(entry["zoom"]),
+            originIsRelative: WPEValueParser.bool(animation?["relative"]) ?? false,
+            originFollowsZoom: parent?["key"] as? String == "zoom",
+            angles: localTransform(in: entry, scriptOrigins: scriptOrigins).angles,
+            anglesAnimation: anglesAnimation, zoomScript: zoomScript
+        )
+    }
+
+    private static func runtimeCameraObjectOverride(
+        _ rawObjects: [[String: Any]],
+        scriptOrigins: [String: SIMD3<Double>],
+        base: WPESceneCamera,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneCamera {
+        // The camera contract selects the bottom-most visible camera in authored list
+        // order, which `rawObjects` preserves.
+        guard let entry = rawObjects.last(where: {
+            $0["camera"] is String && (parseBool($0["visible"]) ?? true)
+        }) else { return base }
+        let origin = localTransform(in: entry, scriptOrigins: scriptOrigins).origin
+        var fov = base.fov
+        if let raw = entry["fov"] {
+            if let dict = raw as? [String: Any], let value = parseDouble(dict["value"]) {
+                fov = value
+            } else if let value = parseDouble(raw) {
+                fov = value
+            }
+        }
+        if parseVector3(entry["angles"]) != nil {
+            diagnostics.append(.init(
+                severity: .warning,
+                message: "Camera object orientation is consumed by native 2D geometry; perspective/depth contracts remain unverified"
+            ))
+        }
+        return WPESceneCamera(
+            center: origin + SIMD3<Double>(0, 0, -1),
+            eye: origin,
+            up: SIMD3<Double>(0, 1, 0),
+            nearZ: base.nearZ,
+            farZ: base.farZ,
+            fov: fov
+        )
+    }
+
+    // MARK: - General
+
+    private static func authoredUserBindings(in raw: Any?) -> [WPESceneAuthoredUserBinding] {
+        let specs = (try? userPropertyBindingSpecs(in: raw)) ?? []
+        return specs.sorted { lhs, rhs in
+            if lhs.key != rhs.key { return lhs.key < rhs.key }
+            return (lhs.condition ?? "") < (rhs.condition ?? "")
+        }.map {
+            WPESceneAuthoredUserBinding(propertyKey: $0.key, condition: $0.condition)
+        }
+    }
+
+    private static func authoredScriptMetadata(
+        authored raw: Any?,
+        resolved: Any?
+    ) -> (script: String?, properties: [String: WPESceneScriptPropertyValue]) {
+        let rawEnvelope = raw as? [String: Any]
+        let resolvedEnvelope = resolved as? [String: Any]
+        return (
+            script: nonEmptyString(rawEnvelope?["script"]),
+            properties: scriptPropertyValues(
+                resolvedEnvelope?["scriptproperties"] ?? rawEnvelope?["scriptproperties"]
+            )
+        )
+    }
+
+    private static func preservedDoubleField(
+        authored raw: Any?,
+        resolved: Any?,
+        defaultValue: Double
+    ) -> WPESceneAuthoredField<Double> {
+        let metadata = authoredScriptMetadata(authored: raw, resolved: resolved)
+        let seed = unwrapDouble(raw) ?? defaultValue
+        return WPESceneAuthoredField(
+            seed: seed,
+            resolvedValue: unwrapDouble(resolved) ?? seed,
+            isAuthored: raw != nil,
+            userBindings: authoredUserBindings(in: raw),
+            script: metadata.script,
+            scriptProperties: metadata.properties
+        )
+    }
+
+    private static func preservedBoolField(
+        authored raw: Any?,
+        resolved: Any?,
+        defaultValue: Bool
+    ) -> WPESceneAuthoredField<Bool> {
+        let metadata = authoredScriptMetadata(authored: raw, resolved: resolved)
+        let seed = parseBool(raw) ?? defaultValue
+        return WPESceneAuthoredField(
+            seed: seed,
+            resolvedValue: parseBool(resolved) ?? seed,
+            isAuthored: raw != nil,
+            userBindings: authoredUserBindings(in: raw),
+            script: metadata.script,
+            scriptProperties: metadata.properties
+        )
+    }
+
+    private static func preservedVector3Field(
+        authored raw: Any?,
+        resolved: Any?,
+        defaultValue: SIMD3<Double>
+    ) -> WPESceneAuthoredField<SIMD3<Double>> {
+        let metadata = authoredScriptMetadata(authored: raw, resolved: resolved)
+        let seed = unwrapVector3(raw) ?? defaultValue
+        return WPESceneAuthoredField(
+            seed: seed,
+            resolvedValue: unwrapVector3(resolved) ?? seed,
+            isAuthored: raw != nil,
+            userBindings: authoredUserBindings(in: raw),
+            script: metadata.script,
+            scriptProperties: metadata.properties
+        )
+    }
+
+    private static func parseGeneral(
+        _ dict: [String: Any],
+        authored rawDict: [String: Any],
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneGeneral {
+        let clearColor = parseVector3(dict["clearcolor"]) ?? WPESceneGeneral.defaultGeneral.clearColor
+        let projection: WPESceneOrthogonalProjection
+        let usesPerspectiveProjection: Bool
+        if let nested = dict["orthogonalprojection"] as? [String: Any] {
+            let width = parseDouble(nested["width"]) ?? WPESceneGeneral.defaultGeneral.orthogonalProjection.width
+            let height = parseDouble(nested["height"]) ?? WPESceneGeneral.defaultGeneral.orthogonalProjection.height
+            let auto = (nested["auto"] as? Bool) ?? WPESceneGeneral.defaultGeneral.orthogonalProjection.auto
+            projection = WPESceneOrthogonalProjection(width: width, height: height, auto: auto)
+            usesPerspectiveProjection = false
+        } else if dict.keys.contains("orthogonalprojection"),
+                  dict["orthogonalprojection"] is NSNull {
+            diagnostics.append(.init(
+                severity: .info,
+                message: String(
+                    localized: "general.orthogonalprojection is null — using perspective camera with 1920×1080 render size",
+                    defaultValue: "general.orthogonalprojection is null — using perspective camera with 1920×1080 render size",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic when perspective projection is used."
+                )
+            ))
+            projection = WPESceneGeneral.defaultGeneral.orthogonalProjection
+            usesPerspectiveProjection = true
+        } else {
+            diagnostics.append(.init(
+                severity: .info,
+                message: String(
+                    localized: "general.orthogonalprojection missing — using 1920×1080",
+                    defaultValue: "general.orthogonalprojection missing — using 1920×1080",
+                    bundle: .appLanguage, comment: "Wallpaper Engine scene diagnostic when default projection dimensions are used."
+                )
+            ))
+            projection = WPESceneGeneral.defaultGeneral.orthogonalProjection
+            usesPerspectiveProjection = false
+        }
+        let parallaxDefaults = WPESceneCameraParallaxSettings.disabled
+        let zoomField = preservedDoubleField(
+            authored: rawDict["zoom"],
+            resolved: dict["zoom"],
+            defaultValue: WPESceneGeneral.defaultGeneral.zoom
+        )
+        let zoom = zoomField.resolvedValue
+        if zoomField.isAuthored {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general.zoom and its authored bindings are preserved as metadata; camera consumption awaits L1 validation"
+            ))
+        }
+        let perspectiveOverrideFOV = preservedDoubleField(
+            authored: rawDict["perspectiveoverridefov"],
+            resolved: dict["perspectiveoverridefov"],
+            defaultValue: 0
+        )
+        let cameraShake = WPESceneCameraShakeSettings(
+            enabled: preservedBoolField(authored: rawDict["camerashake"], resolved: dict["camerashake"], defaultValue: false),
+            amplitude: preservedDoubleField(authored: rawDict["camerashakeamplitude"], resolved: dict["camerashakeamplitude"], defaultValue: 0),
+            speed: preservedDoubleField(authored: rawDict["camerashakespeed"], resolved: dict["camerashakespeed"], defaultValue: 0),
+            roughness: preservedDoubleField(authored: rawDict["camerashakeroughness"], resolved: dict["camerashakeroughness"], defaultValue: 0)
+        )
+        let clearEnabled = preservedBoolField(
+            authored: rawDict["clearenabled"],
+            resolved: dict["clearenabled"],
+            defaultValue: true
+        )
+        let wind = WPESceneWindSettings(
+            enabled: preservedBoolField(authored: rawDict["windenabled"], resolved: dict["windenabled"], defaultValue: false),
+            direction: preservedVector3Field(authored: rawDict["winddirection"], resolved: dict["winddirection"], defaultValue: SIMD3<Double>(0, 0, 1)),
+            strength: preservedDoubleField(authored: rawDict["windstrength"], resolved: dict["windstrength"], defaultValue: 0)
+        )
+        let gravity = WPESceneGravitySettings(
+            direction: preservedVector3Field(authored: rawDict["gravitydirection"], resolved: dict["gravitydirection"], defaultValue: SIMD3<Double>(0, -1, 0)),
+            strength: preservedDoubleField(authored: rawDict["gravitystrength"], resolved: dict["gravitystrength"], defaultValue: 0)
+        )
+        let lightConfiguration = parseLightConfiguration(dict["lightconfig"])
+        if perspectiveOverrideFOV.isAuthored {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general.perspectiveoverridefov drives the perspective camera used by objects that author perspective: true"
+            ))
+        }
+        if [cameraShake.enabled.isAuthored, cameraShake.amplitude.isAuthored,
+            cameraShake.speed.isAuthored, cameraShake.roughness.isAuthored].contains(true) {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general.camerashake fields and authored bindings are preserved; camera jitter is not consumed without a continuous-frame L1 oracle"
+            ))
+        }
+        if clearEnabled.isAuthored {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general.clearenabled is preserved as metadata; render-pass clear consumption awaits L1 validation"
+            ))
+        }
+        if [wind.enabled.isAuthored, wind.direction.isAuthored, wind.strength.isAuthored,
+            gravity.direction.isAuthored, gravity.strength.isAuthored].contains(true) {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general wind/gravity fields and authored bindings are preserved; particle/render consumption awaits L1 validation"
+            ))
+        }
+        if rawDict["lightconfig"] != nil {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "general.lightconfig capacity counts are preserved; Metal light-array allocation and shadow passes await their L1 gates"
+            ))
+        }
+        let cameraParallax = WPESceneCameraParallaxSettings(
+            enabled: parseBool(dict["cameraparallax"]) ?? parallaxDefaults.enabled,
+            amount: parseDouble(dict["cameraparallaxamount"]) ?? parallaxDefaults.amount,
+            delay: parseDouble(dict["cameraparallaxdelay"]) ?? parallaxDefaults.delay,
+            mouseInfluence: parseDouble(dict["cameraparallaxmouseinfluence"]) ?? parallaxDefaults.mouseInfluence
+        )
+        let supportsAudioProcessing = parseBool(dict["supportsaudioprocessing"]) ?? false
+        let hdr = parseBool(dict["hdr"]) ?? false
+        var bloom: WPESceneBloomSettings?
+        if hdr, parseBool(dict["bloom"]) == true {
+            bloom = WPESceneBloomSettings(
+                strength: unwrapDouble(dict["bloomhdrstrength"]) ?? 1,
+                threshold: unwrapDouble(dict["bloomhdrthreshold"]) ?? 0.5,
+                feather: unwrapDouble(dict["bloomhdrfeather"]) ?? 0.5,
+                scatter: unwrapDouble(dict["bloomhdrscatter"]) ?? 1,
+                iterations: parseInt(dict["bloomhdriterations"]) ?? 6,
+                tint: parseVector3(dict["bloomtint"]) ?? SIMD3<Double>(1, 1, 1)
+            )
+        }
+        return WPESceneGeneral(
+            clearColor: clearColor,
+            orthogonalProjection: projection,
+            usesPerspectiveProjection: usesPerspectiveProjection,
+            zoom: zoom,
+            zoomField: zoomField,
+            perspectiveOverrideFOV: perspectiveOverrideFOV,
+            cameraShake: cameraShake,
+            clearEnabled: clearEnabled,
+            wind: wind,
+            gravity: gravity,
+            cameraParallax: cameraParallax,
+            supportsAudioProcessing: supportsAudioProcessing,
+            lightAmbientColor: parseVector3(dict["ambientcolor"])
+                ?? WPESceneGeneral.defaultGeneral.lightAmbientColor,
+            lightSkylightColor: parseVector3(dict["skylightcolor"])
+                ?? WPESceneGeneral.defaultGeneral.lightSkylightColor,
+            lightConfiguration: lightConfiguration,
+            hdr: hdr,
+            bloom: bloom
+        )
+    }
+
+    private static func parseLightConfiguration(_ raw: Any?) -> WPESceneLightConfiguration {
+        guard let dict = raw as? [String: Any] else { return .empty }
+        return WPESceneLightConfiguration(
+            directional: parseInt(dict["directional"]) ?? 0,
+            directionalShadow: parseInt(dict["directionalshadow"]) ?? 0,
+            point: parseInt(dict["point"]) ?? 0,
+            pointShadow: parseInt(dict["pointshadow"]) ?? 0,
+            spot: parseInt(dict["spot"]) ?? 0,
+            spotShadow: parseInt(dict["spotshadow"]) ?? 0
+        )
+    }
+
+    // MARK: - Image objects
+
+    private static func parseImageObject(
+        _ dict: [String: Any],
+        transform: SceneObjectTransform,
+        canvasHeight: Double,
+        scriptOrigins: [String: SIMD3<Double>] = [:],
+        effectiveVisible: Bool? = nil,
+        inheritedAttachment: (name: String, parentID: String)? = nil,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> WPESceneImageObject? {
+        let isShapeQuad = isShapeQuadLayer(dict)
+        guard let imagePath = nonEmptyString(dict["image"]) ?? nonEmptyString(dict["model"])
+            ?? (isShapeQuad ? "models/util/solidlayer.json" : nil) else {
+            let objectName = dict["name"] as? String ?? "?"
+            diagnostics.append(.init(
+                severity: .warning,
+                message: "Image/model object \(objectName) has no renderable resource path"
+            ))
+            return nil
+        }
+
+        let id = (dict["id"] as? String)
+            ?? (dict["id"] as? Int).map(String.init)
+            ?? (dict["name"] as? String)
+            ?? imagePath
+        let name = (dict["name"] as? String) ?? id
+        let origin = transform.origin
+        let scale = transform.scale
+        let angles = transform.angles
+        let local = localTransform(in: dict, scriptOrigins: scriptOrigins)
+        let ownAttachment = nonEmptyString(dict["attachment"]) ?? nonEmptyString(dict["anchor"])
+        let attachment = ownAttachment ?? inheritedAttachment?.name
+        let parentObjectID = (ownAttachment == nil && inheritedAttachment != nil)
+            ? inheritedAttachment?.parentID
+            : parentID(in: dict)
+        let visible = effectiveVisible ?? (parseBool(dict["visible"]) ?? true)
+        let effects = parseImageEffects(dict["effects"], imageName: name, diagnostics: &diagnostics)
+        let alphaFallback = imageAlphaFallback(
+            imagePath: imagePath,
+            rawAlpha: dict["alpha"],
+            effects: effects,
+            syntheticShapeBase: isShapeQuad
+        )
+        let alphaValue = parseAnimatedScalar(dict["alpha"], fallback: alphaFallback)
+        let colorValue = parseAnimatedVector3(dict["color"], fallback: SIMD3<Double>(1, 1, 1))
+        let brightness = parseDouble(dict["brightness"]) ?? 1.0
+        // Also selects the additive composite (SRC_ALPHA/ONE) WPE uses for these beams.
+        let shapePoints = isShapeQuad ? shapeQuadPoints(in: effects) : nil
+        let isShapeQuadBeam = isShapeQuad && shapePoints != nil
+        let blend = isShapeQuadBeam
+            ? WPESceneBlendMode.additive
+            : parseImageBlendMode(dict)
+        let colorBlendMode = isShapeQuadBeam ? 9 : parseColorBlendMode(dict)
+        let alignment = WPESceneAlignment(rawWPEValue: dict["alignment"] as? String)
+        let size: CGSize? = if let vec = parseVector3(dict["size"]) {
+            CGSize(width: vec.x, height: vec.y)
+        } else if isShapeQuad {
+            CGSize(width: canvasHeight, height: canvasHeight)
+        } else {
+            nil
+        }
+
+        let materialRelativePath = dict["material"] as? String
+        let materialInstance = parseMaterialInstance(dict["instance"])
+        let config = parseImageConfig(dict["config"])
+        let disablePropagation = parseBool(dict["disablepropagation"]) ?? false
+        let solid = parseBool(dict["solid"]) ?? false
+        let usesPerspectiveProjection = parseBool(dict["perspective"]) ?? false
+        let copyBackground = parseBool(dict["copybackground"]) ?? true
+        let dependencies = parseDependencyIDs(dict["dependencies"])
+        let animationLayers = parseAnimationLayers(dict["animationlayers"], imageName: name, diagnostics: &diagnostics)
+        let originScript = dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false)
+        let scaleScript = dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true)
+        let anglesScript = dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true)
+        // Kept even when statically resolvable: there is no parse-time bake path for
+        // color, so dropping a "static" script would freeze the authored value.
+        let colorScript = dynamicTransformScript(in: dict["color"], preserveStaticallyResolvable: true)
+
+        if !effects.isEmpty {
+            let names = effects.map(\.name).joined(separator: ", ")
+            diagnostics.append(.init(severity: .info, message: "Image \(name) declares effects (\(names)) — shader pipeline partially supported"))
+        }
+        if materialRelativePath != nil {
+            diagnostics.append(.init(severity: .info, message: "Image \(name) declares material — rendered via the material shader pass"))
+        }
+        if materialInstance?.userTextures.isEmpty == false {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "Image \(name) declares dynamic instance user textures — preserved but awaiting a native provider"
+            ))
+        }
+        if config.passthrough {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "Image \(name) declares config.passthrough — preserved as metadata; render-graph consumption awaits L1 validation"
+            ))
+        }
+        if disablePropagation {
+            diagnostics.append(.init(
+                severity: .info,
+                message: "Image \(name) declares disablepropagation — preserved as metadata; parallax-hierarchy consumption awaits L1 validation"
+            ))
+        }
+        if !animationLayers.isEmpty {
+            diagnostics.append(.init(severity: .info, message: "Image \(name) declares animationlayers — rendered by the puppet warp system"))
+        }
+        if imagePath.lowercased().hasSuffix(".tex") {
+            diagnostics.append(.init(severity: .warning, message: "Image \(name) uses .tex texture — falls back to first-frame stub if available"))
+        }
+
+        let parallaxDepth = parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"])
+
+        // The layer stays renderable (visible defaults true above) until the captured
+        // script's init()/update() run.
+        var visibleScript: String?
+        var visibleScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        if let visibleDict = dict["visible"] as? [String: Any],
+           let script = visibleDict["script"] as? String, !script.isEmpty {
+            visibleScript = script
+            visibleScriptProperties = scriptPropertyValues(visibleDict["scriptproperties"])
+            diagnostics.append(.init(severity: .info, message: "Image \(name) has a visible-script; runs as a layer SceneScript"))
+        }
+        var alphaScript: String?
+        var alphaScriptProperties: [String: WPESceneScriptPropertyValue] = [:]
+        if let alphaDict = dict["alpha"] as? [String: Any],
+           let script = alphaDict["script"] as? String, !script.isEmpty {
+            alphaScript = script
+            alphaScriptProperties = scriptPropertyValues(alphaDict["scriptproperties"])
+            diagnostics.append(.init(severity: .info, message: "Image \(name) has an alpha-script; runs as a layer SceneScript"))
+        }
+
+        return WPESceneImageObject(
+            id: id,
+            name: name,
+            imageRelativePath: imagePath,
+            materialRelativePath: materialRelativePath,
+            materialInstance: materialInstance,
+            config: config,
+            disablePropagation: disablePropagation,
+            solid: solid,
+            usesPerspectiveProjection: usesPerspectiveProjection,
+            copyBackground: copyBackground,
+            parentObjectID: parentObjectID,
+            attachment: attachment,
+            origin: origin,
+            scale: scale,
+            angles: angles,
+            localOrigin: local.origin,
+            localScale: local.scale,
+            localAngles: local.angles,
+            visible: visible,
+            alpha: alphaValue.value,
+            alphaAnimation: alphaValue.animation,
+            color: colorValue.value,
+            colorAnimation: colorValue.animation,
+            brightness: brightness,
+            blendMode: blend,
+            colorBlendMode: colorBlendMode,
+            alignment: alignment,
+            size: size,
+            dependencies: dependencies,
+            effects: effects,
+            animationLayers: animationLayers,
+            parallaxDepth: parallaxDepth,
+            visibleScript: visibleScript,
+            alphaScript: alphaScript,
+            alphaScriptProperties: alphaScriptProperties,
+            originAnimation: WPEValueParser.animatedValue(dict["origin"]),
+            originScript: originScript,
+            scaleScript: scaleScript,
+            anglesScript: anglesScript,
+            colorScript: colorScript,
+            scriptProperties: visibleScriptProperties,
+            shapePoints: shapePoints,
+            isShapeQuad: isShapeQuad
+        )
+    }
+
+    /// `point0..3` are the `EffectPerspectiveUV` corners WPE uses for lightshafts /
+    /// directdraw quads.
+    private static func shapeQuadPoints(in effects: [WPESceneImageEffect]) -> [SIMD2<Double>]? {
+        for effect in effects where effect.visible {
+            for override in effect.passOverrides {
+                var points: [SIMD2<Double>] = []
+                for index in 0..<4 {
+                    guard let vector = override.constants["point\(index)"]?.vectorValue,
+                          vector.count >= 2 else {
+                        points = []
+                        break
+                    }
+                    points.append(SIMD2<Double>(vector[0], vector[1]))
+                }
+                if points.count == 4 { return points }
+            }
+        }
+        return nil
+    }
+
+    private static func imageAlphaFallback(
+        imagePath: String,
+        rawAlpha: Any?,
+        effects: [WPESceneImageEffect],
+        syntheticShapeBase: Bool = false
+    ) -> Double {
+        // Keep a synthesized shape-quad base transparent even when its effect is missing
+        // or unparsed, or a broken quad draws an opaque rectangle.
+        if syntheticShapeBase, rawAlpha == nil {
+            return 0
+        }
+        guard rawAlpha == nil,
+              effects.contains(where: \.visible) else {
+            return 1
+        }
+
+        switch imagePath.lowercased() {
+        case "models/util/solidlayer.json", "models/util/solidlayer_depthtest.json":
+            // Unauthored alpha on a solid layer means transparent: the effect draws its own
+            // alpha instead of filling the rectangle.
+            return 0
+        default:
+            return 1
+        }
+    }
+
+    /// Raw `common_blending.h` BLENDMODE index (0 = normal); a `blendmode` string
+    /// wins and is re-expressed numerically.
+    static func parseColorBlendMode(_ dict: [String: Any]) -> Int {
+        if let rawBlend = dict["blendmode"] as? String {
+            switch WPESceneBlendMode(rawWPEValue: rawBlend) {
+            case .multiply: return 2
+            case .screen:   return 7
+            case .additive: return 9
+            // `translucent` has no BLENDMODE peer — it is a plain alpha-over
+            // that the fixed-function path already covers.
+            case .normal, .translucent: return 0
+            }
+        }
+        return parseInt(dict["colorBlendMode"] ?? dict["colorblendmode"]) ?? 0
+    }
+
+    /// Fixed-function approximation only: modes needing the destination resolve to
+    /// `.normal` and are routed through the programmable composite via `colorBlendMode`.
+    private static func parseImageBlendMode(_ dict: [String: Any]) -> WPESceneBlendMode {
+        if let rawBlend = dict["blendmode"] as? String {
+            return WPESceneBlendMode(rawWPEValue: rawBlend)
+        }
+        return WPESceneBlendMode.fixedFunction(forWPEBlendMode: parseColorBlendMode(dict)) ?? .normal
+    }
+
+    private static func parseAnimatedVector3(
+        _ raw: Any?,
+        fallback: SIMD3<Double>
+    ) -> (value: SIMD3<Double>, animation: WPESceneAnimatedValue?) {
+        guard case .animated(let animated)? = WPEValueParser.shaderConstant(raw) else {
+            return (parseVector3(raw) ?? fallback, nil)
+        }
+        // Seed from the authored static `value` (WPE's own preview value) so a
+        // frame rendered before the timeline ticks matches the editor.
+        let seed = animated.vectorFallback ?? animated.vector(at: 0)
+        guard let seed, seed.count >= 3 else {
+            return (fallback, animated)
+        }
+        return (SIMD3<Double>(seed[0], seed[1], seed[2]), animated)
+    }
+
+    private static func dynamicTransformScript(
+        in raw: Any?,
+        preserveStaticallyResolvable: Bool
+    ) -> WPESceneTransformScript? {
+        guard let transform = raw as? [String: Any],
+              let script = transform["script"] as? String, !script.isEmpty,
+              preserveStaticallyResolvable || !WPETransformScriptStaticAnalysis.isStaticallyResolvable(script) else {
+            return nil
+        }
+        let seed = parseVector3(resolveBoundTransformValue(transform["value"])) ?? SIMD3<Double>(0, 0, 0)
+        return WPESceneTransformScript(
+            script: script,
+            scriptProperties: scriptPropertyValues(transform["scriptproperties"]),
+            seed: seed
+        )
+    }
+
+    private static func nonEmptyString(_ raw: Any?) -> String? {
+        guard let string = raw as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func parseDependencyIDs(_ raw: Any?) -> [String] {
+        guard let array = raw as? [Any] else { return [] }
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in array {
+            let id: String?
+            if let string = value as? String, !string.isEmpty {
+                id = string
+            } else if let int = parseInt(value) {
+                id = String(int)
+            } else {
+                id = nil
+            }
+            guard let id, seen.insert(id).inserted else { continue }
+            result.append(id)
+        }
+        return result
+    }
+
+    private static func parseImageEffects(
+        _ raw: Any?,
+        imageName: String,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> [WPESceneImageEffect] {
+        guard let array = raw as? [Any] else { return [] }
+        var effects: [WPESceneImageEffect] = []
+        for (index, entry) in array.enumerated() {
+            guard let dict = entry as? [String: Any] else {
+                diagnostics.append(.init(severity: .warning, message: "Image \(imageName) effect \(index) is malformed"))
+                continue
+            }
+            guard let file = dict["file"] as? String, !file.isEmpty else {
+                diagnostics.append(.init(severity: .warning, message: "Image \(imageName) effect \(index) has no file"))
+                continue
+            }
+            let id = (dict["id"] as? String)
+                ?? parseInt(dict["id"]).map(String.init)
+                ?? "\(index)"
+            let name = (dict["name"] as? String) ?? effectName(from: file)
+            // `visible` may be a bare Bool or a `{value, script}` envelope; a plain
+            // `parseBool` returns nil for the envelope form.
+            let visibleEnvelope = dict["visible"] as? [String: Any]
+            let visibleSeed = parseBool(dict["visible"])
+                ?? visibleEnvelope.flatMap { parseBool($0["value"]) }
+                ?? true
+            var visibleScript: WPESceneTransformScript?
+            if let visibleEnvelope,
+               let script = visibleEnvelope["script"] as? String, !script.isEmpty {
+                visibleScript = WPESceneTransformScript(
+                    script: script,
+                    scriptProperties: scriptPropertyValues(visibleEnvelope["scriptproperties"]),
+                    seed: SIMD3<Double>(visibleSeed ? 1 : 0, 0, 0)
+                )
+            }
+            effects.append(WPESceneImageEffect(
+                id: id,
+                name: name,
+                fileRelativePath: file,
+                visible: visibleSeed,
+                passOverrides: parseEffectPassOverrides(dict["passes"]),
+                visibleScript: visibleScript
+            ))
+        }
+        return effects
+    }
+
+    private static func parseEffectPassOverrides(_ raw: Any?) -> [WPESceneEffectPassOverride] {
+        guard let array = raw as? [Any] else { return [] }
+        return array.compactMap { entry in
+            guard let dict = entry as? [String: Any] else { return nil }
+            return WPESceneEffectPassOverride(
+                id: parseInt(dict["id"]),
+                combos: WPEValueParser.comboMap(dict["combos"]),
+                constants: WPEValueParser.shaderConstants(dict["constantshadervalues"]),
+                textures: parseTextureSlots(dict["textures"]),
+                userTextures: parseUserTextureBindings(dict["usertextures"]),
+                constantScripts: parseConstantScripts(dict["constantshadervalues"])
+            )
+        }
+    }
+
+    /// `instance` applies after the base material: null texture slots are sparse
+    /// no-ops, combos overwrite the matching compiled-shader switch.
+    private static func parseMaterialInstance(_ raw: Any?) -> WPESceneMaterialInstance? {
+        guard let dict = raw as? [String: Any] else { return nil }
+        let userTextures = parseUserTextureBindings(dict["usertextures"])
+        return WPESceneMaterialInstance(
+            id: parseInt(dict["id"]),
+            combos: WPEValueParser.comboMap(dict["combos"]),
+            textures: parseTextureSlots(dict["textures"]),
+            userTextures: userTextures
+        )
+    }
+
+    /// The array index is the overridden texture slot, so the `null` holes must be
+    /// counted, not compacted away.
+    private static func parseUserTextureBindings(_ raw: Any?) -> [WPESceneUserTextureBinding] {
+        (raw as? [Any] ?? []).enumerated().compactMap { slot, raw in
+            if let name = nonEmptyString(raw) {
+                return WPESceneUserTextureBinding(name: name, slot: slot)
+            }
+            guard let entry = raw as? [String: Any],
+                  let name = nonEmptyString(entry["name"]) else { return nil }
+            return WPESceneUserTextureBinding(
+                name: name,
+                type: nonEmptyString(entry["type"]),
+                slot: slot
+            )
+        }
+    }
+
+    private static func parseImageConfig(_ raw: Any?) -> WPESceneImageConfig {
+        guard let dict = raw as? [String: Any] else { return WPESceneImageConfig() }
+        return WPESceneImageConfig(
+            passthrough: parseBool(dict["passthrough"]) ?? false
+        )
+    }
+
+    /// Kept even when statically resolvable: no parse-time bake path for a uniform.
+    /// The seed comes from the sibling `value`, widened to Vec3 for scalars and Vec2s.
+    private static func parseConstantScripts(
+        _ raw: Any?
+    ) -> [String: WPESceneTransformScript] {
+        guard let dict = raw as? [String: Any] else { return [:] }
+        var scripts: [String: WPESceneTransformScript] = [:]
+        for (name, entry) in dict {
+            guard let entry = entry as? [String: Any],
+                  let script = entry["script"] as? String, !script.isEmpty else { continue }
+            let seed = parseVector3(entry["value"])
+                ?? (parseDouble(entry["value"]).map { SIMD3<Double>($0, $0, $0) })
+                ?? SIMD3<Double>(0, 0, 0)
+            scripts[name] = WPESceneTransformScript(
+                script: script,
+                scriptProperties: scriptPropertyValues(entry["scriptproperties"]),
+                seed: seed
+            )
+        }
+        return scripts
+    }
+
+    private static func parseAnimationLayers(
+        _ raw: Any?,
+        imageName: String,
+        diagnostics: inout [WPESceneDiagnostic]
+    ) -> [WPESceneAnimationLayer] {
+        guard let array = raw as? [Any] else { return [] }
+        var layers: [WPESceneAnimationLayer] = []
+        for (index, entry) in array.enumerated() {
+            guard let dict = entry as? [String: Any],
+                  let id = parseInt(dict["id"]),
+                  let animation = parseInt(dict["animation"]) else {
+                diagnostics.append(.init(severity: .warning, message: "Image \(imageName) animation layer \(index) is malformed"))
+                continue
+            }
+            layers.append(WPESceneAnimationLayer(
+                id: id,
+                rate: parseDouble(dict["rate"]) ?? 0,
+                visible: parseBool(dict["visible"]) ?? true,
+                blend: parseDouble(dict["blend"]) ?? 1,
+                animation: animation,
+                additive: parseBool(dict["additive"]) ?? false
+            ))
+        }
+        return layers
+    }
+
+    private static func parseTextureSlots(_ raw: Any?) -> [Int: String] {
+        guard let array = raw as? [Any] else { return [:] }
+        var result: [Int: String] = [:]
+        for (index, value) in array.enumerated() {
+            if let string = parseTextureSlotPath(value) {
+                result[index] = string
+            }
+        }
+        return result
+    }
+
+    /// Slots are plain path strings or `{"name": ...}` entries (per-instance opacity
+    /// masks); `NSNull` / empty slots return nil.
+    private static func parseTextureSlotPath(_ raw: Any?) -> String? {
+        if let string = raw as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard let dict = raw as? [String: Any] else { return nil }
+        for key in ["value", "name", "texture", "path", "file"] {
+            if let parsed = parseTextureSlotPath(dict[key]) {
+                return parsed
+            }
+        }
+        return nil
+    }
+
+    /// Iterates `constantshadervalues` in either of WPE's two forms (plain
+    /// dict, or structured array of `{name:…, value:…|default:…}` entries).
+    private static func forEachShaderConstant(
+        in raw: Any?,
+        _ body: (String, Any) -> Void
+    ) {
+        if let dict = raw as? [String: Any] {
+            for (name, value) in dict {
+                body(name, value)
+            }
+            return
+        }
+        guard let array = raw as? [Any] else { return }
+        for entry in array {
+            guard let dict = entry as? [String: Any],
+                  let name = WPEValueParser.shaderConstantEntryName(in: dict) else { continue }
+            if dict.keys.contains("value") {
+                body(name, dict["value"] ?? NSNull())
+            } else if dict.keys.contains("default") {
+                body(name, dict["default"] ?? NSNull())
+            }
+        }
+    }
+
+    private static func effectName(from file: String) -> String {
+        let pieces = file.split(separator: "/")
+        if pieces.count >= 2 {
+            return String(pieces[pieces.count - 2])
+        }
+        return file
+    }
+
+    // MARK: - Primitive parsing
+
+    /// Accepts JSON arrays of numbers, JSON dictionaries with x/y/z keys, or WPE's space-separated strings ("0.5 0 0").
+    public static func parseVector3(_ raw: Any?) -> SIMD3<Double>? {
+        WPEValueParser.vector3(raw)
+    }
+
+    static func parseDouble(_ raw: Any?) -> Double? {
+        WPEValueParser.double(raw)
+    }
+
+    /// Per-axis depth string ("1 0" = horizontal-only, "0 1" = vertical-only), not a
+    /// scalar. A bare scalar maps to both axes, a `{user,value}` wrapper is unwrapped,
+    /// absent -> `(1, 1)`: WPE omits the key at its default and always writes an explicit 0.
+    static func parseParallaxDepth(_ raw: Any?) -> SIMD2<Double> {
+        guard let raw else { return SIMD2<Double>(1, 1) }
+        if let dict = raw as? [String: Any], let value = dict["value"] {
+            return parseParallaxDepth(value)
+        }
+        if let vector = parseVector3(raw) { return SIMD2<Double>(vector.x, vector.y) }
+        if let scalar = parseDouble(raw) { return SIMD2<Double>(scalar, scalar) }
+        return SIMD2<Double>(0, 0)
+    }
+
+    private static func parseInt(_ raw: Any?) -> Int? {
+        WPEValueParser.int(raw)
+    }
+
+    private static func parseBool(_ raw: Any?) -> Bool? {
+        // Property-bound visibility stores the resolved boolean in the envelope's `value` field.
+        if let dict = raw as? [String: Any], let value = dict["value"] {
+            return parseBool(value)
+        }
+        return WPEValueParser.bool(raw)
+    }
+}
+
+private struct SceneObjectTransform {
+    let origin: SIMD3<Double>
+    let scale: SIMD3<Double>
+    let angles: SIMD3<Double>
+
+    static let identity = SceneObjectTransform(
+        origin: SIMD3<Double>(0, 0, 0),
+        scale: SIMD3<Double>(1, 1, 1),
+        angles: SIMD3<Double>(0, 0, 0)
+    )
+
+    func combining(child: SceneObjectTransform) -> SceneObjectTransform {
+        let combined = WPEEulerTransform.combine(
+            origin: origin, scale: scale, angles: angles,
+            childOrigin: child.origin, childScale: child.scale, childAngles: child.angles
+        )
+        return SceneObjectTransform(origin: combined.origin, scale: combined.scale, angles: combined.angles)
+    }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "waterwaves",
+  "passes": [
+    {
+      "material": "materials/effects/waterwaves.json"
+    }
+  ]
+}

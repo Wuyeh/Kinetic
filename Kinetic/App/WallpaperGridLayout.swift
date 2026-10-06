@@ -7,18 +7,18 @@ struct WallpaperGridMetrics {
 
     init(availableWidth: CGFloat) {
         let width = max(0, availableWidth)
-        let minimum = MainWindowDesignTokens.Grid.minimumCardWidth
-        let maximum = MainWindowDesignTokens.Grid.maximumCardWidth
+        let minimum = MainWindowDesignTokens.Grid.minimumPosterWidth
+        let maximum = MainWindowDesignTokens.Grid.maximumPosterWidth
         let gap = MainWindowDesignTokens.Grid.horizontalGap
-        let breakpoint = MainWindowDesignTokens.Grid.threeToFourColumnBreakpoint
+        let breakpoint = MainWindowDesignTokens.Grid.fourToFiveColumnBreakpoint
 
         let count: Int
         if width < breakpoint {
-            // 正常最小窗口可以容纳 3 列；更窄的布局提案只作防溢出兜底。
-            count = min(3, max(1, Int(floor((width + gap) / (minimum + gap)))))
+            // 正常最小窗口可以容纳 4 列；更窄的布局提案只作防溢出兜底。
+            count = min(4, max(1, Int(floor((width + gap) / (minimum + gap)))))
         } else {
             // 当前阶段连续长到最大卡宽后才加一列，避免阶段内提前封顶。
-            count = 4 + Int(floor((width - breakpoint) / (maximum + gap)))
+            count = 5 + Int(floor((width - breakpoint) / (maximum + gap)))
         }
 
         columnCount = count

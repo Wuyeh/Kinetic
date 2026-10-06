@@ -60,7 +60,7 @@ private final class WeakVideo {
     init(_ value: VideoRenderer) { self.value = value }
 }
 
-/// Crossfade Engine。使用真实桌面窗口，确保 Core Animation 真的在屏幕上运行。
+/// Module 6：Crossfade Engine。使用真实桌面窗口，确保 Core Animation 真的在屏幕上运行。
 final class CrossfadeDesktopHostTests: XCTestCase {
     private let identifier = NSUserInterfaceItemIdentifier("Kinetic.Crossfade.UnitTest")
 
@@ -280,7 +280,7 @@ final class CrossfadeDesktopHostTests: XCTestCase {
         XCTAssertFalse(renderers[0].isDisposed)
     }
 
-    /// 真实视频连续切换 50 次，舞台底层始终有完整画面，旧 Renderer 全部释放。
+    /// Module 6 完成标准：真实视频连续切换 50 次，舞台底层始终有完整画面，旧 Renderer 全部释放。
     @MainActor
     func testFiftyRealVideoSwitchesNeverExposeAnEmptyDesktop() async throws {
         func fixture(_ name: String) throws -> Wallpaper {
@@ -323,7 +323,7 @@ final class CrossfadeDesktopHostTests: XCTestCase {
             if let duration = host.lastTransitionDuration { durations.append(duration) }
         }
 
-        print("CROSSFADE switches=50 fades=\(host.completedTransitionCount) samples=\(samples) gaps=\(gaps) fadeSamples=\(fadeSamples) avg=\(durations.reduce(0, +) / Double(max(durations.count, 1))) max=\(durations.max() ?? 0)")
+        print("MODULE6 switches=50 fades=\(host.completedTransitionCount) samples=\(samples) gaps=\(gaps) fadeSamples=\(fadeSamples) avg=\(durations.reduce(0, +) / Double(max(durations.count, 1))) max=\(durations.max() ?? 0)")
         XCTAssertEqual(gaps, 0, "The desktop always shows a fully opaque, decoded frame")
         XCTAssertGreaterThan(samples, 50)
         XCTAssertGreaterThan(fadeSamples, 50, "Real video content visibly passes through intermediate opacity")
