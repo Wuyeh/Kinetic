@@ -473,7 +473,8 @@ extension WPEMetalRenderExecutor {
         let width = max(Float(geometry.size?.width ?? 1) * scaleX, 0.0001)
         let height = max(Float(geometry.size?.height ?? 1) * scaleY, 0.0001)
         let anchor = Self.centeredOrigin(of: geometry, sceneSize: sceneSize)
-        let center = anchor + Self.alignmentCenterOffset(alignment: geometry.alignment, width: width, height: height)
+        let center = anchor + Self.alignmentCenterOffset(alignment: geometry.alignment, width: width, height: height,
+                                                         scale: geometry.scale)
         let local = SIMD2<Float>(
             (point.x - Float(geometry.puppetMeshCenter.x)) * scaleX * (geometry.scale.x < 0 ? -1 : 1),
             (point.y - Float(geometry.puppetMeshCenter.y)) * scaleY * (geometry.scale.y < 0 ? -1 : 1)

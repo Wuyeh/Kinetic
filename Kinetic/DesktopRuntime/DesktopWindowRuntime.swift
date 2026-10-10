@@ -79,8 +79,8 @@ final class DesktopWindowRuntime: NSObject {
             window = newWindow
         }
         targetDisplay = display
-        // 只在当前桌面层内排序，不激活 App、不把桌面窗口变成 key/main window。
-        window?.orderFrontRegardless()
+        // 只在桌面图标层内排序（排到最后，在图标与叠加层之下），不激活 App、不把桌面窗口变成 key/main window。
+        if let window { DesktopLayerOrdering.placeWallpaper(window) }
         return true
     }
 

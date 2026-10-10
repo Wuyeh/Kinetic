@@ -125,9 +125,20 @@ final class LocalOrganizationStore: ObservableObject {
 
     func deleteList(_ id: UUID) throws {
         var document = snapshot
-        guard document.lists.contains(where: { $0.id == id }) else { throw LocalOrganizationError.listNotFound }
+        guard let list = document.lists.first(where: { $0.id == id }) else { throw LocalOrganizationError.listNotFound }
         document.lists.removeAll { $0.id == id }
         try commit(document)
+        // A duplicate can share its cover. Remove only an unreferenced managed asset,
+        // after the list transaction succeeds; never follow a reference into the library.
+        let coverDirectory = storage.rootURL.appendingPathComponent("ListCovers", isDirectory: true)
+        if let cover = list.coverImageURL,
+           !document.lists.contains(where: { $0.coverImageURL == cover }),
+           cover.deletingLastPathComponent().standardizedFileURL == coverDirectory.standardizedFileURL,
+           (try? coverDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+           (try? cover.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+           (try? cover.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true {
+            try? fileManager.removeItem(at: cover)
+        }
     }
 
     func add(_ ids: [Wallpaper.ID], to listID: UUID) throws {
@@ -144,6 +155,33 @@ final class LocalOrganizationStore: ObservableObject {
         }
         document.lists[index].itemAddedAt = addedAt
         document.lists[index].updatedAt = now
+        try commit(document)
+    }
+
+    /// Module 46：移出列表。只删这个列表里的引用，壁纸本身、喜爱与其他列表不变。
+    func remove(_ ids: Set<Wallpaper.ID>, from listID: UUID) throws {
+        var document = snapshot
+        guard let index = document.lists.firstIndex(where: { $0.id == listID }) else {
+            throw LocalOrganizationError.listNotFound
+        }
+        guard document.lists[index].wallpaperIDs.contains(where: ids.contains) else { return }
+        document.lists[index].wallpaperIDs.removeAll { ids.contains($0) }
+        document.lists[index].itemAddedAt = document.lists[index].itemAddedAt?.filter { !ids.contains($0.key) }
+        document.lists[index].updatedAt = Date()
+        try commit(document)
+    }
+
+    /// Module 46：列表顺序即轮播顺序。`order` 必须正好是现有成员换一个顺序。
+    func reorder(_ listID: UUID, to order: [Wallpaper.ID]) throws {
+        var document = snapshot
+        guard let index = document.lists.firstIndex(where: { $0.id == listID }) else {
+            throw LocalOrganizationError.listNotFound
+        }
+        let current = document.lists[index].wallpaperIDs
+        // A stale order (the list changed meanwhile) is ignored rather than dropping or duplicating members.
+        guard order != current, order.count == current.count, Set(order) == Set(current) else { return }
+        document.lists[index].wallpaperIDs = order
+        document.lists[index].updatedAt = Date()
         try commit(document)
     }
 

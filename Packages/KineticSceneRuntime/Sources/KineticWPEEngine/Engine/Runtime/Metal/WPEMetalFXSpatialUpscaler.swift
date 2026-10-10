@@ -150,7 +150,7 @@ final class WPEMetalFXSpatialUpscaler {
         case .contain, .cover:
             return sourceWidth * drawableHeight == sourceHeight * drawableWidth
                 ? nil : .aspectMismatch
-        case .center:
+        case .center, .custom:
             return .fitMode
         }
     }

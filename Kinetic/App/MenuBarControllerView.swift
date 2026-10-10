@@ -58,9 +58,13 @@ final class MainWindowNavigation: ObservableObject {
     // Deliver after storing the request: a live window consumes synchronously.
     // @Published's willSet delivery would restore an already-consumed request.
     let requests = CurrentValueSubject<ShellSection?, Never>(nil)
+    let displayRequests = CurrentValueSubject<DisplayID?, Never>(nil)
     var requestedSection: ShellSection? { requests.value }
-    func request(_ section: ShellSection) { requests.send(section) }
+    var requestedDisplay: DisplayID? { displayRequests.value }
+    func request(_ section: ShellSection) { displayRequests.send(nil); requests.send(section) }
+    func request(display: DisplayID) { requests.send(nil); displayRequests.send(display) }
     func consume() { requests.send(nil) }
+    func consumeDisplay() { displayRequests.send(nil) }
 }
 
 @MainActor
@@ -112,13 +116,16 @@ struct KineticMenuBarControllerView: View {
                 importer: appDelegate.importService,
                 navigation: appDelegate.mainWindowNavigation,
                 steamApply: appDelegate.steamDisplayApply,
-                willShowMainWindow: { [appDelegate] in appDelegate.endMainWindowSuppression() }
+                playlist: appDelegate.playlistPlayer,
+                schemes: appDelegate.schemeCoordinator,
+                performance: appDelegate.performanceStrip, adaptiveFrameRate: appDelegate.adaptiveFrameRate,
+                willShowMainWindow: { [appDelegate] in appDelegate.willShowMainWindow() }
             )
         } else {
             Text("shell.error.unavailable")
             Divider()
             Button("menu.openKinetic") {
-                appDelegate.endMainWindowSuppression()
+                appDelegate.willShowMainWindow()
                 NSApp.unhide(nil)
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
@@ -143,6 +150,13 @@ struct RuntimeMenuBarControllerView: View {
     let importer: LocalImportService?
     let navigation: MainWindowNavigation
     let steamApply: SteamDisplayApplyCoordinator?
+    /// Module 46：有显示器在轮播壁纸列表时显示「上一张 / 下一张」。
+    var playlist: WallpaperPlaylistPlayer? = nil
+    /// Module 48：菜单栏「方案」。
+    var schemes: WallpaperSchemeCoordinator? = nil
+    /// Module 52：菜单顶部的性能条。
+    var performance: PerformanceStripModel? = nil
+    var adaptiveFrameRate: AdaptiveFrameRateController? = nil
     /// Module 19：用户主动打开主窗口，登录启动的隐藏不再生效。
     let willShowMainWindow: @MainActor () -> Void
     @Environment(\.openWindow) private var openWindow
@@ -180,8 +194,27 @@ struct RuntimeMenuBarControllerView: View {
         } else {
             Text("runtime.state.noWallpaper")
         }
+        if let performance {
+            Divider()
+            MenuBarPerformanceStrip(model: performance, adaptive: adaptiveFrameRate)
+        }
 
         MenuBarGlobalControls(runtime: runtime, isInLibrary: { library.wallpaper(id: $0) != nil })
+        if let playlist { MenuBarPlaylistControls(player: playlist, runtime: runtime) }
+
+        Menu("调整壁纸") {
+            ForEach(Array(runtime.summary.displays.enumerated()), id: \.element.id) { index, display in
+                Button {
+                    navigation.request(display: display.id)
+                    showMainWindow()
+                } label: {
+                    Label(DisplayControlPresentation.name(display, index: index),
+                          systemImage: DisplayControlPresentation.symbol(for: display.id))
+                }
+            }
+        }
+        .disabled(runtime.summary.displays.isEmpty)
+        if let schemes { MenuBarSchemeMenu(coordinator: schemes, store: schemes.store) }
 
         if let failure = runtime.lastFailure {
             Divider()
@@ -283,6 +316,39 @@ struct MenuBarGlobalControls: View {
     private var audioTitle: String {
         let state = NSLocalizedString(runtime.isAudioEnabled ? "menu.audio.on" : "menu.audio.off", comment: "")
         return String(format: NSLocalizedString("menu.audio.format", comment: ""), state)
+    }
+}
+
+/// Module 52：Kinetic 自己的 CPU / 内存；自适应帧率降帧时写明原因。
+@MainActor
+struct MenuBarPerformanceStrip: View {
+    @ObservedObject var model: PerformanceStripModel
+    let adaptive: AdaptiveFrameRateController?
+
+    var body: some View {
+        Text(model.usage?.summary ?? "Kinetic 占用：无法读取")
+        if let adaptive { AdaptiveFrameRateLine(controller: adaptive) }
+    }
+}
+
+private struct AdaptiveFrameRateLine: View {
+    @ObservedObject var controller: AdaptiveFrameRateController
+    var body: some View {
+        if let reason = controller.reason { Text("已降帧：" + reason.title) }
+    }
+}
+
+/// Module 46 / 规格 36：Playlist Prev / Next，只在有显示器轮播时出现，作用于所有正在轮播的显示器。
+@MainActor
+struct MenuBarPlaylistControls: View {
+    @ObservedObject var player: WallpaperPlaylistPlayer
+    @ObservedObject var runtime: WallpaperRuntimeManager
+
+    var body: some View {
+        if player.hasActivePlaylist {
+            Button("menu.playlist.previous") { player.stepAll(.previous) }
+            Button("menu.playlist.next") { player.stepAll(.next) }
+        }
     }
 }
 

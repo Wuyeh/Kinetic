@@ -34,7 +34,26 @@
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>仅在你主动连接时，Kinetic 读取所选音乐播放器的当前曲目、封面与进度；播放控制只在你点击相应按钮时执行。</string>
+    <!-- Module 54：Sparkle 2 更新。地址来自构建设置 KINETIC_UPDATE_FEED_URL（默认空 = 不检查更新）；公钥校验更新包的 EdDSA 签名。 -->
+    <key>KineticUpdateFeedURL</key>
+    <string>$(KINETIC_UPDATE_FEED_URL)</string>
+    <key>SUPublicEDKey</key>
+    <string>h0YP3aBRF8ueVK1sA6Y0UMt8aH1NLJFl05fI964lozE=</string>
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSLocationUsageDescription</key>
+    <string>仅在你选择系统定位获取天气时，Kinetic 使用大致位置查询当地天气并驱动你启用的天气效果。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>仅在你选择系统定位获取天气时，Kinetic 使用大致位置查询当地天气并驱动你启用的天气效果。</string>
 </dict>
 </plist>

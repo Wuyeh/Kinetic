@@ -36,6 +36,12 @@ final class OnboardingController: ObservableObject {
         case active
     }
 
+    /// Module 56：设置演示壁纸，之后是一页「了解 Kinetic」。
+    enum Phase: Equatable {
+        case demos
+        case tour
+    }
+
     let demos: [OnboardingDemo]
     @Published private(set) var isWelcomeVisible: Bool
     /// 在引导中成功设置过壁纸：显示「已设置壁纸」提示。
@@ -45,12 +51,16 @@ final class OnboardingController: ObservableObject {
     @Published private(set) var errorMessage: String?
     /// 已复制进资料库的演示；再次点按时直接应用，不重复导入。
     @Published private(set) var importedWallpaperIDs: [String: Wallpaper.ID] = [:]
+    @Published private(set) var phase: Phase = .demos
+    /// Module 56：连着多台显示器时，等用户在选择窗口里选一台的演示。
+    @Published private(set) var demoAwaitingDisplay: OnboardingDemo?
 
     private let store: OnboardingStore
     private let library: WallpaperLibrary
     private let importer: LocalImportService
     private let runtime: WallpaperRuntimeManager
-    private var pendingWallpaperID: Wallpaper.ID?
+    /// 正在设置的显示器与壁纸；只认这台显示器上的结果。
+    private var pending: (display: DisplayID, wallpaperID: Wallpaper.ID)?
     private var cancellables = Set<AnyCancellable>()
 
     init(store: OnboardingStore, library: WallpaperLibrary, importer: LocalImportService,
@@ -66,8 +76,8 @@ final class OnboardingController: ObservableObject {
         }
         isWelcomeVisible = !store.isCompleted && library.wallpapers.isEmpty && !demos.isEmpty
 
-        runtime.$state
-            .sink { [weak self] state in self?.runtimeStateChanged(state) }
+        runtime.$summary
+            .sink { [weak self] summary in self?.runtimeSummaryChanged(summary) }
             .store(in: &cancellables)
         runtime.$lastFailure
             .compactMap { $0 }
@@ -75,15 +85,51 @@ final class OnboardingController: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// 正在某台显示器上显示时为「使用中」。只有一台显示器时它不能再点；多台时还可以设到别的显示器。
     func status(of demo: OnboardingDemo) -> DemoStatus {
         if applyingDemoID == demo.id { return .applying }
-        if let id = importedWallpaperIDs[demo.id], runtime.state.activeWallpaperID == id { return .active }
+        if let id = importedWallpaperIDs[demo.id], !runtime.summary.displays(showing: id).isEmpty {
+            return runtime.displayIDs.count > 1 ? .idle : .active
+        }
         return .idle
     }
 
-    /// 「设置为壁纸」：第一次点按时复制进资料库，然后应用。同一时间只处理一个。
+    /// 选择窗口里的显示器（与资料库的「选择应用显示器」相同）。
+    var displayItems: [DisplayTargetItem] {
+        runtime.summary.displays.enumerated().map { index, display in
+            DisplayTargetItem(display: display, index: index,
+                              wallpaper: display.runtime.activeWallpaperID.flatMap { library.wallpaper(id: $0) })
+        }
+    }
+
+    /// 「设置为壁纸」：只有一台显示器时直接设置；多台时先请用户选显示器（Module 56）。同一时间只处理一个。
     func setAsWallpaper(_ demo: OnboardingDemo) async {
-        guard applyingDemoID == nil, status(of: demo) != .active else { return }
+        guard applyingDemoID == nil, demoAwaitingDisplay == nil else { return }
+        errorMessage = nil
+        let displays = runtime.displayIDs
+        if displays.count > 1 {
+            demoAwaitingDisplay = demo
+            return
+        }
+        guard let display = displays.first else {
+            errorMessage = NSLocalizedString("onboarding.noDisplay", comment: "")
+            return
+        }
+        guard status(of: demo) != .active else { return }
+        await setAsWallpaper(demo, on: display)
+    }
+
+    func chooseDisplay(_ display: DisplayID) async {
+        guard let demo = demoAwaitingDisplay else { return }
+        demoAwaitingDisplay = nil
+        guard runtime.displayIDs.contains(display) else { return }
+        await setAsWallpaper(demo, on: display)
+    }
+
+    func cancelDisplayChoice() { demoAwaitingDisplay = nil }
+
+    private func setAsWallpaper(_ demo: OnboardingDemo, on display: DisplayID) async {
+        guard applyingDemoID == nil else { return }
         errorMessage = nil
         applyingDemoID = demo.id
 
@@ -102,31 +148,57 @@ final class OnboardingController: ObservableObject {
             importedWallpaperIDs[demo.id] = imported.id
             wallpaper = library.wallpaper(id: imported.id) ?? imported
         }
-        pendingWallpaperID = wallpaper.id
-        runtime.apply(wallpaper)
+        pending = (display, wallpaper.id)
+        // 这台显示器已经在显示它：Runtime 不会再发状态变化，直接算成功。
+        if runtime.summary.displays(showing: wallpaper.id).contains(display) {
+            succeed()
+            return
+        }
+        runtime.apply(wallpaper, to: display)
+    }
+
+    /// 设置好壁纸后的「继续」：进入「了解 Kinetic」。
+    func continueToTour() {
+        demoAwaitingDisplay = nil
+        phase = .tour
     }
 
     /// 「开始使用」或「跳过」：之后启动不再显示引导。
     func finish() {
         store.markCompleted()
+        demoAwaitingDisplay = nil
         isWelcomeVisible = false
     }
 
-    private func runtimeStateChanged(_ state: WallpaperRuntimeState) {
+    /// 帮助 › 显示欢迎页：从演示页重新开始；已复制进资料库的演示不会重复导入。
+    func showAgain() {
+        guard !demos.isEmpty else { return }
+        phase = .demos
+        hasSetWallpaper = false
+        errorMessage = nil
+        demoAwaitingDisplay = nil
+        isWelcomeVisible = true
+    }
+
+    private func runtimeSummaryChanged(_ summary: RuntimeSummary) {
         objectWillChange.send()
-        guard let pending = pendingWallpaperID, state.activeWallpaperID == pending else { return }
-        pendingWallpaperID = nil
+        guard let pending, summary.displays(showing: pending.wallpaperID).contains(pending.display) else { return }
+        succeed()
+    }
+
+    private func runtimeFailed(_ failure: WallpaperRuntimeFailure) {
+        guard let pending, failure.wallpaperID == pending.wallpaperID, failure.displayID == pending.display else { return }
+        fail(failure.message)
+    }
+
+    private func succeed() {
+        pending = nil
         applyingDemoID = nil
         hasSetWallpaper = true
     }
 
-    private func runtimeFailed(_ failure: WallpaperRuntimeFailure) {
-        guard failure.wallpaperID == pendingWallpaperID else { return }
-        fail(failure.message)
-    }
-
     private func fail(_ message: String) {
-        pendingWallpaperID = nil
+        pending = nil
         applyingDemoID = nil
         errorMessage = message
     }

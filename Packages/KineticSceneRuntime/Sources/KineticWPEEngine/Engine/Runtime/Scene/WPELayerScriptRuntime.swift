@@ -1673,6 +1673,8 @@ class WPELayerScriptBridge: @unchecked Sendable {
     fileprivate var ownAnglesValue: JSValue?
     fileprivate var assignedOtherTransforms: [String: WPELayerScriptTransformMutation] = [:]
     fileprivate var otherTransformValues: [String: [OwnTransformField: JSValue]] = [:]
+    /// Text handles' `size` objects, refreshed from the renderer's measurement on read.
+    fileprivate var textSizeValues: [String: JSValue] = [:]
     fileprivate var createdLayers: [(key: String, handle: JSValue, configuration: WPESceneJSONValue)] = []
     fileprivate var pendingCreatedDestruction: Set<String> = []
     fileprivate var destroyedCreatedKeys: Set<String> = []
@@ -2223,7 +2225,27 @@ class WPELayerScriptBridge: @unchecked Sendable {
         let size = JSValue(newObjectIn: context)!
         size.setObject(info?.size.x ?? 0, forKeyedSubscript: "x" as NSString)
         size.setObject(info?.size.y ?? 0, forKeyedSubscript: "y" as NSString)
-        handle.setObject(size, forKeyedSubscript: "size" as NSString)
+        if let info, info.isText {
+            // A text layer's size is its current laid-out block (3326873240 sizes its backdrop from it); the
+            // authored box only stands in until the renderer has measured the live text.
+            textSizeValues[key] = size
+            let textID = info.id
+            let getSize: @convention(block) () -> JSValue? = { [weak self] in
+                guard let self, let size = textSizeValues[key] else { return nil }
+                if let live = shared?.textLayerSize(id: textID) {
+                    size.setObject(live.x, forKeyedSubscript: "x" as NSString)
+                    size.setObject(live.y, forKeyedSubscript: "y" as NSString)
+                }
+                guard let context = size.context, let copy = JSValue(newObjectIn: context) else { return size }
+                copy.setObject(size.objectForKeyedSubscript("x"), forKeyedSubscript: "x" as NSString)
+                copy.setObject(size.objectForKeyedSubscript("y"), forKeyedSubscript: "y" as NSString)
+                return copy
+            }
+            let setSize: @convention(block) (JSValue) -> Void = { _ in }
+            defineAccessor(on: handle, property: "size", get: getSize, set: setSize, in: context)
+        } else {
+            handle.setObject(size, forKeyedSubscript: "size" as NSString)
+        }
         if key == Self.ownKey {
             installOwnTransformAccessors(on: handle, info: info, in: context)
         } else {
@@ -2369,6 +2391,39 @@ class WPELayerScriptBridge: @unchecked Sendable {
         }
         defineAccessor(on: handle, property: "alignment", get: getAlignment, set: setAlignment, in: context)
         defineAccessor(on: handle, property: "parallaxDepth", get: getDepth, set: setDepth, in: context)
+        // Text layers: scripts flip these (3326873240 turns its labels "left" when the panel is mirrored).
+        let getHorizontalAlign: @convention(block) () -> String = { [weak self] in
+            self?.presentationMutations[key]?.horizontalAlignment
+                ?? self?.authoredString("horizontalalign", forKey: key)?.lowercased() ?? "center"
+        }
+        let setHorizontalAlign: @convention(block) (JSValue) -> Void = { [weak self] value in
+            guard value.isString, let text = value.toString()?.lowercased(),
+                  ["left", "center", "right"].contains(text) else { return }
+            self?.presentationMutations[key, default: .init()].horizontalAlignment = text
+        }
+        let getVerticalAlign: @convention(block) () -> String = { [weak self] in
+            self?.presentationMutations[key]?.verticalAlignment
+                ?? self?.authoredString("verticalalign", forKey: key)?.lowercased() ?? "middle"
+        }
+        let setVerticalAlign: @convention(block) (JSValue) -> Void = { [weak self] value in
+            guard value.isString, let text = value.toString()?.lowercased(),
+                  ["top", "center", "middle", "bottom"].contains(text) else { return }
+            self?.presentationMutations[key, default: .init()].verticalAlignment = text
+        }
+        defineAccessor(on: handle, property: "horizontalalign", get: getHorizontalAlign, set: setHorizontalAlign, in: context)
+        defineAccessor(on: handle, property: "verticalalign", get: getVerticalAlign, set: setVerticalAlign, in: context)
+    }
+
+    /// An authored string field, plain or `{value, script}`.
+    fileprivate func authoredString(_ field: String, forKey key: String) -> String? {
+        guard case let .object(configuration)? = layerInfo(forKey: key)?.initialConfiguration else { return nil }
+        switch configuration[field] {
+        case let .string(text)?: return text
+        case let .object(wrapped)?:
+            guard case let .string(text)? = wrapped["value"] else { return nil }
+            return text
+        default: return nil
+        }
     }
 
     /// Reading a vector or mutating only the returned object's x/y/z does not publish a geometry assignment; the script must assign the vector back to thisLayer.origin/scale/angles.
@@ -2377,12 +2432,8 @@ class WPELayerScriptBridge: @unchecked Sendable {
         info: WPESceneScriptLayerInfo?,
         in context: JSContext
     ) {
-        let origin = SIMD3<Double>(
-            info?.origin.x ?? 0,
-            info?.origin.y ?? 0,
-            info?.originZ ?? 0
-        )
-        let scale = info?.scale ?? SIMD3<Double>(repeating: 1)
+        let origin = info?.scriptOrigin ?? .zero
+        let scale = info?.scriptScale ?? SIMD3<Double>(repeating: 1)
         let anglesDegrees = (info?.angles ?? .zero) * (180 / .pi)
         ownOriginValue = Self.vector(origin, in: context)
         ownScaleValue = Self.vector(scale, in: context)
@@ -2426,8 +2477,8 @@ class WPELayerScriptBridge: @unchecked Sendable {
         in context: JSContext
     ) {
         let seeds: [OwnTransformField: SIMD3<Double>] = [
-            .origin: SIMD3<Double>(info?.origin.x ?? 0, info?.origin.y ?? 0, info?.originZ ?? 0),
-            .scale: info?.scale ?? SIMD3<Double>(repeating: 1),
+            .origin: info?.scriptOrigin ?? .zero,
+            .scale: info?.scriptScale ?? SIMD3<Double>(repeating: 1),
             .angles: (info?.angles ?? .zero) * (180 / .pi),
         ]
         var bridges: [OwnTransformField: JSValue] = [:]
@@ -2484,7 +2535,17 @@ class WPELayerScriptBridge: @unchecked Sendable {
         }
     }
 
+    /// Each read hands the script its own Vec3, as WPE does: `initial = parent.scale` in `init` is a snapshot, not a
+    /// view that follows the layer (3326873240 sizes its corner caps from such a snapshot).
     private func transformValue(forKey key: String, field: OwnTransformField) -> JSValue? {
+        guard let bridge = currentTransformBridgeValue(forKey: key, field: field),
+              let context = bridge.context, let vector = finiteVector(bridge) else {
+            return currentTransformBridgeValue(forKey: key, field: field)
+        }
+        return Self.vector(vector, in: context)
+    }
+
+    private func currentTransformBridgeValue(forKey key: String, field: OwnTransformField) -> JSValue? {
         let value = transformBridgeValue(forKey: key, field: field)
         let assigned = key == Self.ownKey ? assignedOwnTransform : assignedOtherTransforms[key] ?? .init()
         switch field {
@@ -2501,8 +2562,8 @@ class WPELayerScriptBridge: @unchecked Sendable {
         guard readsLiveTransforms, let info = layerInfo(forKey: key),
               let live = shared?.layerTransform(id: info.id)?.transform else { return value }
         let vector: SIMD3<Double> = switch field {
-        case .origin: live.origin ?? SIMD3(info.origin.x, info.origin.y, info.originZ)
-        case .scale: live.scale ?? info.scale
+        case .origin: live.origin ?? info.scriptOrigin
+        case .scale: live.scale ?? info.scriptScale
         case .angles: (live.angles ?? info.angles) * (180 / .pi)
         }
         Self.update(value, with: vector)

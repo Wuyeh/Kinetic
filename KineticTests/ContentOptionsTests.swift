@@ -23,7 +23,8 @@ final class ContentOptionsTests: XCTestCase {
         XCTAssertTrue(options.showsAllTypes)
         XCTAssertTrue(WallpaperType.allCases.allSatisfy { !options.isChecked($0) },
                       "With 全部类型 no specific type shows a checkmark")
-        XCTAssertEqual(ContentSortMode.allCases, [.dateAdded, .name, .type])
+        XCTAssertEqual(ContentSortMode.available(inSteamStore: false), [.dateAdded, .name, .type])
+        XCTAssertEqual(ContentSortMode.available(inSteamStore: true), [.dateAdded, .popularity, .name, .type])
         XCTAssertEqual(ContentViewOptions.displayedTypes, [.scene, .web, .video])
     }
 
@@ -229,6 +230,7 @@ final class ContentOptionsTests: XCTestCase {
     func testLabelsMatchTheSpec() {
         let expected = ["content.section.sort": "排序选项", "content.section.display": "显示选项",
                         "content.sort.dateAdded": "添加时间", "content.sort.name": "名称", "content.sort.type": "类型",
+                        "content.sort.popularity": "热门",
                         "content.type.all": "全部类型", "content.type.scene": "Scene", "content.type.web": "Web",
                         "content.type.video": "视频"]
         for (key, value) in expected {

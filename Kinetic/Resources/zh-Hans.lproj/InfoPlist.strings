@@ -1,2 +1,4 @@
 "CFBundleDisplayName" = "Kinetic";
 "CFBundleName" = "Kinetic";
+"NSLocationUsageDescription" = "仅在你选择系统定位获取天气时，Kinetic 使用大致位置查询当地天气并驱动你启用的天气效果。";
+"NSLocationWhenInUseUsageDescription" = "仅在你选择系统定位获取天气时，Kinetic 使用大致位置查询当地天气并驱动你启用的天气效果。";

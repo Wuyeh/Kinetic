@@ -303,9 +303,11 @@ final class PosterLayerView: NSView {
         DispatchQueue.main.async { [weak self] in self?.updatePlayback() }
     }
 
+    /// Module 58：`visibleRect` 在滚动区域里可能返回裁切区域本身而不与自己的边界相交（实测滚出可视范围的 Poster
+    /// 仍得到非空矩形，于是一直在播放）；与 `bounds` 取交集后才是真正看得见的部分。
     var isVisibleInScrollView: Bool {
         guard window != nil, !isHiddenOrHasHiddenAncestor else { return false }
-        return !visibleRect.isEmpty
+        return !visibleRect.intersection(bounds).isEmpty
     }
 
     private var windowIsVisible: Bool {

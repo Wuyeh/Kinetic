@@ -31,23 +31,44 @@ final class SteamStoreTests: XCTestCase {
             lock.withLock { recorded.append(url) }
         }
         var pages: [String: [[String: Any]]] = [:]
+        var popularPages: [String: [[String: Any]]] = [:]
+        var queryPages: [String: [[String: Any]]] = [:]
         var cursors: [String: String] = [:]
         var status = 200
         var offline = false
         var players: [String: String] = [:]
+        /// 自定义个人资料 ID → SteamID64。
+        var vanity: [String: String] = [:]
+        /// SteamID64 → 这位作者的全部项目（GetUserFiles 按页切分）。
+        var userFiles: [String: [[String: Any]]] = [:]
 
         func fetch(_ url: URL) async throws -> (Data, Int) {
             record(url)
             if offline { throw URLError(.notConnectedToInternet) }
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
+            if url.path.contains("ResolveVanityURL") {
+                let response: [String: Any] = vanity[value("vanityurl") ?? ""].map { ["steamid": $0, "success": 1] }
+                    ?? ["success": 42, "message": "No match"]
+                return (try JSONSerialization.data(withJSONObject: ["response": response]), 200)
+            }
+            if url.path.contains("GetUserFiles") {
+                let all = userFiles[value("steamid") ?? ""] ?? []
+                let page = Int(value("page") ?? "1") ?? 1, size = Int(value("numperpage") ?? "30") ?? 30
+                let slice = Array(all.dropFirst((page - 1) * size).prefix(size))
+                return (try JSONSerialization.data(withJSONObject: ["response": ["total": all.count,
+                                                                                 "publishedfiledetails": slice]]), 200)
+            }
             if url.path.contains("GetPlayerSummaries") {
                 let ids = items.first { $0.name == "steamids" }?.value?.split(separator: ",").map(String.init) ?? []
                 let list = ids.compactMap { id in players[id].map { ["steamid": id, "personaname": $0] } }
                 return (try JSONSerialization.data(withJSONObject: ["response": ["players": list]]), 200)
             }
             let cursor = items.first { $0.name == "cursor" }?.value ?? "*"
+            let context = "\(value("query_type") ?? "")|\(value("search_text") ?? "")|\(cursor)"
             let body: [String: Any] = ["response": ["total": 99,
-                                                    "publishedfiledetails": pages[cursor] ?? [],
+                                                    "publishedfiledetails": queryPages[context]
+                                                        ?? (value("query_type") == "0" ? popularPages[cursor] : pages[cursor]) ?? [],
                                                     "next_cursor": cursors[cursor] ?? cursor]]
             return (try JSONSerialization.data(withJSONObject: body), status)
         }
@@ -85,18 +106,70 @@ final class SteamStoreTests: XCTestCase {
         XCTAssertEqual(value("match_all_tags"), "false")
         XCTAssertNil(value("search_text"))
         XCTAssertEqual(items.filter { $0.name.hasPrefix("requiredtags[") }.map(\.value), ["Scene", "Web", "Video"])
-        XCTAssertEqual(items.filter { $0.name.hasPrefix("excludedtags[") }.map(\.value), ["Mature", "Questionable"])
+        XCTAssertEqual(items.filter { $0.name.hasPrefix("excludedtags[") }.map(\.value), [],
+                       "User decision 2026-10-06: every age rating shows by default")
 
         query.searchText = "  极光  "
+        query.sortMode = .searchRelevance
         query.typeFilter = .only([.video])
         let search = query.url(key: key, cursor: "abc")
         let searchItems = URLComponents(url: search, resolvingAgainstBaseURL: false)!.queryItems!
-        XCTAssertEqual(searchItems.first { $0.name == "query_type" }?.value, "11", "Searching ranks by relevance")
+        XCTAssertEqual(searchItems.first { $0.name == "query_type" }?.value, "12",
+                       "R4: searching ranks by text relevance (11 is RankedByVotesUp)")
         XCTAssertEqual(searchItems.first { $0.name == "search_text" }?.value, "极光")
         XCTAssertEqual(searchItems.filter { $0.name.hasPrefix("requiredtags[") }.map(\.value), ["Video"])
         XCTAssertFalse(query.cacheKey.contains(key))
         XCTAssertTrue(SteamStoreService.isValidKeyFormat(key))
         XCTAssertFalse(SteamStoreService.isValidKeyFormat("not-a-key"))
+    }
+
+    /// R4：文字搜索使用 RankedByTextSearch（12）；缓存键随查询类型变化，旧的「11」缓存不会被当作新结果。
+    func testTextSearchUsesRankedByTextSearchAndCacheKeysFollowTheQueryType() {
+        var query = SteamStoreQuery()
+        XCTAssertEqual(query.queryType, 1)
+        XCTAssertTrue(query.cacheKey.hasPrefix("workshop-rank-v2|1|recentlyPublished|"))
+        query.searchText = "Aurora"
+        query.sortMode = .searchRelevance
+        XCTAssertEqual(query.queryType, 12)
+        XCTAssertTrue(query.cacheKey.hasPrefix("workshop-rank-v2|12|searchRelevance|aurora|"), query.cacheKey)
+        var other = query
+        other.searchText = " aurora "
+        XCTAssertEqual(other.cacheKey, query.cacheKey, "Same search, same cache entry")
+    }
+
+    func testAuthorReferencesAreRecognized() {
+        typealias A = SteamAuthorReference
+        XCTAssertEqual(A.explicit(in: "https://steamcommunity.com/profiles/76561198000000001/"), .steamID("76561198000000001"))
+        XCTAssertEqual(A.explicit(in: "steamcommunity.com/profiles/76561198000000001/myworkshopfiles/?appid=431960"),
+                       .steamID("76561198000000001"))
+        XCTAssertEqual(A.explicit(in: " https://steamcommunity.com/id/Aurora_Studio "), .vanity("Aurora_Studio"))
+        XCTAssertEqual(A.explicit(in: "76561198000000001"), .steamID("76561198000000001"))
+        XCTAssertNil(A.explicit(in: "https://steamcommunity.com/sharedfiles/filedetails/?id=123"))
+        XCTAssertNil(A.explicit(in: "aurora borealis"))
+        XCTAssertNil(A.explicit(in: "12345"))
+        XCTAssertEqual(A.vanityCandidate(in: "aurora-studio"), "aurora-studio")
+        XCTAssertNil(A.vanityCandidate(in: "aurora borealis"), "Several words are a title search only")
+        XCTAssertNil(A.vanityCandidate(in: "极光"), "Custom profile IDs are ASCII")
+        XCTAssertNil(A.vanityCandidate(in: "a"))
+    }
+
+    func testPopularityUsesOfficialRankingAndKeepsSearchFiltersAndSeparateCache() {
+        var query = SteamStoreQuery()
+        query.searchText = "  white smoke  "
+        query.filters.select("Anime", in: .genre)
+        query.typeFilter = .only([.scene])
+        let ordinaryCache = query.cacheKey
+        query.sortMode = .topRatedAllTime
+        let url = query.url(key: key, cursor: "rank-page2")
+        let fake = FakeSteam()
+        XCTAssertEqual(fake.query(url, "query_type"), ["0"])
+        XCTAssertEqual(fake.query(url, "search_text"), ["white smoke"])
+        XCTAssertEqual(fake.query(url, "cursor"), ["rank-page2"])
+        XCTAssertEqual(fake.query(url, "requiredtags"), ["Anime", "Scene"])
+        XCTAssertEqual(fake.query(url, "match_all_tags"), ["true"])
+        XCTAssertNotEqual(query.cacheKey, ordinaryCache)
+        XCTAssertTrue(query.cacheKey.hasPrefix("workshop-rank-v2|0|topRatedAllTime|"))
+        XCTAssertFalse(query.cacheKey.contains(key))
     }
 
     func testResponsesAreParsedLeniently() throws {
@@ -149,6 +222,66 @@ final class SteamStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testPopularitySwitchResetsPagingPreservesRankAndUsesSeparateCaches() async throws {
+        let fake = FakeSteam()
+        fake.pages["*"] = [detail("1", title: "A latest", tag: "Video", created: 300)]
+        fake.popularPages["*"] = [detail("3", title: "Z first", tag: "Web", created: 100),
+                                  detail("2", title: "A second", tag: "Scene", created: 200)]
+        fake.popularPages["next"] = [detail("4", title: "B third", tag: "Video", created: 400)]
+        fake.cursors["*"] = "next"
+        let store = makeService(fake, key: key)
+        store.update()
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.items.map(\.workshopID), ["1"])
+        store.update(sortMode: .topRatedAllTime)
+        try await waitFor { store.phase == .loaded }
+        let popular = ContentViewOptions(sortMode: .popularity)
+        XCTAssertEqual(store.displayedItems(options: popular).map(\.workshopID), ["3", "2"],
+                       "Neither title nor publication date can overwrite server rank")
+        store.loadMore()
+        try await waitFor { store.items.count == 3 && !store.isLoadingMore }
+        XCTAssertEqual(store.displayedItems(options: popular).map(\.workshopID), ["3", "2", "4"])
+        let queryRequests = fake.requests.filter { $0.path.contains("QueryFiles") }
+        XCTAssertEqual(queryRequests.map { fake.query($0, "query_type") }, [["1"], ["0"], ["0"]])
+        XCTAssertEqual(queryRequests.map { fake.query($0, "cursor") }, [["*"], ["*"], ["next"]])
+
+        store.update(sortMode: .recentlyPublished)
+        XCTAssertEqual(store.phase, .loaded, "The original first page is a separate cached query")
+        XCTAssertEqual(store.items.map(\.workshopID), ["1"])
+        store.update(sortMode: .topRatedAllTime)
+        XCTAssertEqual(store.items.map(\.workshopID), ["3", "2"])
+        XCTAssertEqual(fake.requests.filter { $0.path.contains("QueryFiles") }.count, 3,
+                       "Fresh first-page caches for different official modes remain separate")
+    }
+
+    @MainActor
+    func testPopularSearchDoesNotPrependKnownAuthorsAndKeepsItsModeOnFilterChanges() async throws {
+        let fake = FakeSteam()
+        fake.players = ["76561190000000001": "Aurora"]
+        fake.vanity["aurora"] = "76561190000000001"
+        fake.pages["*"] = [detail("1", title: "known author", tag: "Scene", created: 300)]
+        fake.userFiles["76561190000000001"] = fake.pages["*"]
+        fake.popularPages["*"] = [detail("2", title: "popular match", tag: "Scene", created: 100)]
+        let store = makeService(fake, key: key)
+        store.update()
+        try await waitFor { store.phase == .loaded && store.items.first?.authorName == "Aurora" }
+        let authorRequests = fake.requests.filter { $0.path.contains("GetUserFiles") }.count
+        store.update(searchText: "aurora", sortMode: .topRatedAllTime)
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.items.map(\.workshopID), ["2"])
+        XCTAssertEqual(fake.requests.filter { $0.path.contains("GetUserFiles") }.count, authorRequests)
+        store.update(typeFilter: .only([.scene]))
+        try await waitFor { store.phase == .loaded }
+        let last = try XCTUnwrap(fake.requests.last { $0.path.contains("QueryFiles") })
+        XCTAssertEqual(fake.query(last, "query_type"), ["0"])
+        XCTAssertEqual(fake.query(last, "search_text"), ["aurora"])
+        XCTAssertEqual(fake.query(last, "requiredtags"), ["Scene"])
+        store.update(searchText: "")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.queryType, 0, "Clearing search keeps the user's popular sort")
+    }
+
+    @MainActor
     func testWithoutAKeyNothingIsRequestedAndAValidKeyStartsBrowsing() async throws {
         let fake = FakeSteam()
         fake.pages["*"] = [detail("10", title: "Sea", tag: "Video", created: 300),
@@ -178,14 +311,14 @@ final class SteamStoreTests: XCTestCase {
         XCTAssertEqual(store.items.map(\.workshopID), ["10", "11", "12"], "Pages are appended without duplicates")
         XCTAssertFalse(store.canLoadMore, "The last page ends paging")
 
-        // 排序只在已加载的结果上进行，不重新请求。
+        // 旧本地排序选项不能覆盖 Steam 服务器的顺序。
         let requestCount = fake.requests.count
         var options = ContentViewOptions()
         XCTAssertEqual(store.displayedItems(options: options).map(\.workshopID), ["10", "11", "12"])
         options.sortMode = .name
-        XCTAssertEqual(store.displayedItems(options: options).map(\.title), ["Aurora", "Scene", "Sea"])
+        XCTAssertEqual(store.displayedItems(options: options).map(\.title), ["Sea", "Aurora", "Scene"])
         options.sortMode = .type
-        XCTAssertEqual(store.displayedItems(options: options).map(\.type), [.scene, .web, .video])
+        XCTAssertEqual(store.displayedItems(options: options).map(\.type), [.video, .web, .scene])
         XCTAssertEqual(fake.requests.count, requestCount)
 
         // 类型筛选与搜索会重新查询。
@@ -199,6 +332,36 @@ final class SteamStoreTests: XCTestCase {
         store.removeAPIKey()
         XCTAssertEqual(store.phase, .needsAPIKey)
         XCTAssertTrue(store.items.isEmpty)
+    }
+
+    @MainActor
+    func testWorkshopDisplayKeepsServerOrderEvenWhenTitlesAndDatesDisagree() async throws {
+        let fake = FakeSteam()
+        fake.pages["*"] = [detail("3", title: "Z first", tag: "Video", created: 100),
+                           detail("2", title: "A second", tag: "Web", created: 300),
+                           detail("1", title: "B third", tag: "Scene", created: 200)]
+        let store = makeService(fake, key: key)
+        store.update(searchText: "囍")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.displayedItems(options: ContentViewOptions()).map(\.workshopID), ["3", "2", "1"],
+                       "The old default publication sort must not overwrite search relevance")
+    }
+
+    @MainActor
+    func testDuplicateIDsWithinAnAppendedPageKeepTheFirstServerOccurrence() async throws {
+        let fake = FakeSteam()
+        fake.pages["*"] = [detail("1", title: "First", tag: "Video", created: 100)]
+        fake.cursors["*"] = "next"
+        fake.pages["next"] = [detail("2", title: "First appearance", tag: "Scene", created: 200),
+                              detail("2", title: "Later appearance", tag: "Scene", created: 300),
+                              detail("1", title: "Previously seen", tag: "Video", created: 400)]
+        let store = makeService(fake, key: key)
+        store.update()
+        try await waitFor { store.phase == .loaded }
+        store.loadMore()
+        try await waitFor { !store.isLoadingMore }
+        XCTAssertEqual(store.items.map(\.workshopID), ["1", "2"])
+        XCTAssertEqual(store.items.last?.title, "First appearance")
     }
 
     /// 钥匙串授权：启动时只确认 Key 存在（不读内容，不会请求授权）；之后整个运行期间最多读取一次，
@@ -274,6 +437,334 @@ final class SteamStoreTests: XCTestCase {
         for file in files where file.pathExtension == "json" {
             XCTAssertFalse(try String(contentsOf: file).contains(key))
         }
+    }
+
+    // MARK: - R4 作者搜索与翻页保护
+
+    @MainActor
+    func testProfileLinksListTheAuthorsWallpapersWithTheSameContentRules() async throws {
+        let fake = FakeSteam()
+        let author = "76561198000000009"
+        var works: [[String: Any]] = (0..<31).map { detail("9\($0)", title: "作品 \($0)", tag: "Video", created: 500 - $0, creator: author) }
+        var adult = detail("8001", title: "成人", tag: "Video", created: 600, creator: author)
+        adult["tags"] = [["tag": "Video"], ["tag": "Mature"]]
+        works.insert(adult, at: 0)
+        works.insert(detail("8002", title: "应用", tag: "Application", created: 601, creator: author), at: 0)
+        fake.userFiles[author] = works
+        fake.players = [author: "北境"]
+        let store = makeService(fake, key: key)
+        store.setHiddenAgeRatings(["Mature"])   // 设置中开启「隐藏成人」时，作者的壁纸同样遵守
+        store.update(searchText: "https://steamcommunity.com/profiles/\(author)/")
+        try await waitFor { store.phase == .loaded }
+        let request = try XCTUnwrap(fake.requests.first { $0.path.contains("GetUserFiles") })
+        XCTAssertEqual(fake.query(request, "steamid"), [author])
+        XCTAssertEqual(fake.query(request, "appid"), ["431960"])
+        XCTAssertEqual(fake.query(request, "page"), ["1"])
+        XCTAssertFalse(fake.requests.contains { $0.path.contains("QueryFiles") }, "A profile link is not a title search")
+        XCTAssertFalse(store.items.contains { $0.workshopID == "8001" }, "Hidden by the user's setting, like the normal query")
+        XCTAssertFalse(store.items.contains { $0.workshopID == "8002" }, "Only playable types, like the normal query")
+        XCTAssertEqual(store.items.count, 28)
+        XCTAssertEqual(store.loadMoreState, .idle)
+
+        store.loadMore()
+        try await waitFor { store.loadMoreState == .exhausted }
+        XCTAssertEqual(fake.query(try XCTUnwrap(fake.requests.last { $0.path.contains("GetUserFiles") }), "page"), ["2"])
+        XCTAssertEqual(store.items.count, 31, "All of the author's wallpapers, no duplicates")
+    }
+
+    @MainActor
+    func testCustomProfileLinksResolveAndUnknownOnesSayWhy() async throws {
+        let fake = FakeSteam()
+        fake.vanity = ["aurora": "76561198000000010"]
+        fake.userFiles["76561198000000010"] = [detail("70", title: "极光", tag: "Web", created: 1, creator: "76561198000000010")]
+        let store = makeService(fake, key: key)
+        store.update(searchText: "https://steamcommunity.com/id/aurora/")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.items.map(\.workshopID), ["70"])
+
+        store.update(searchText: "https://steamcommunity.com/id/nobody/")
+        try await waitFor { if case .failed = store.phase { return true } else { return false } }
+        XCTAssertEqual(store.phase, .failed(SteamStoreError.authorNotFound("nobody").localizedDescription))
+    }
+
+    @MainActor
+    func testKeywordsUseOnlyServerCandidatesRatherThanKnownAuthors() async throws {
+        let fake = FakeSteam()
+        let north = "76561190000000001", studio = "76561190000000002"
+        fake.pages["*"] = [detail("10", title: "Sea", tag: "Video", created: 300, creator: north),
+                           detail("11", title: "Aurora", tag: "Web", created: 200, creator: studio)]
+        fake.players = [north: "北境 North", studio: "Studio"]
+        fake.vanity = ["studio": studio]
+        fake.userFiles[studio] = [detail("11", title: "Aurora", tag: "Web", created: 200, creator: studio),
+                                  detail("12", title: "Nebula", tag: "Scene", created: 100, creator: studio)]
+        let store = makeService(fake, key: key)
+        store.reload()
+        try await waitFor { store.phase == .loaded && store.items.allSatisfy { $0.authorName != nil } }
+
+        // 本机已知的作者名包含 north，不能注入关键词候选。
+        fake.pages["*"] = [detail("30", title: "North wind", tag: "Video", created: 50, creator: studio)]
+        store.update(searchText: "north")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.items.map(\.workshopID), ["30"], "Keyword candidates must come only from Steam text search")
+
+        // 单个词碰巧也是作者自定义 ID，仍是普通服务器文字搜索。
+        fake.pages["*"] = [detail("31", title: "Studio lights", tag: "Video", created: 40, creator: north),
+                           detail("12", title: "Nebula", tag: "Scene", created: 100, creator: studio)]
+        store.update(searchText: "studio")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.items.map(\.workshopID), ["31", "12"],
+                       "A keyword matching a vanity ID must not prepend an unrelated author list")
+        let search = try XCTUnwrap(fake.requests.last { $0.path.contains("QueryFiles") })
+        XCTAssertEqual(fake.query(search, "query_type"), ["12"])
+        XCTAssertEqual(fake.query(search, "search_text"), ["studio"])
+    }
+
+    @MainActor
+    func testRepeatedCursorsAndDuplicatePagesNeverLoopForever() async throws {
+        let fake = FakeSteam()
+        fake.pages["*"] = [detail("1", title: "A", tag: "Video", created: 3)]
+        fake.cursors["*"] = "a"
+        fake.pages["a"] = [detail("2", title: "B", tag: "Video", created: 2)]
+        fake.cursors["a"] = "*"   // 后端回到已请求过的游标
+        let store = makeService(fake, key: key)
+        store.reload()
+        try await waitFor { store.phase == .loaded }
+        store.loadMore()
+        try await waitFor { store.loadMoreState != .loading }
+        XCTAssertEqual(store.items.map(\.workshopID), ["1", "2"])
+        XCTAssertEqual(store.loadMoreState, .exhausted, "A cursor that was already requested ends paging")
+
+        // 游标一直前进，但每页只有重复项目：几页之后报告无法继续，而不是一直请求。
+        let dupes = FakeSteam()
+        dupes.pages["*"] = [detail("1", title: "A", tag: "Video", created: 3)]
+        dupes.cursors["*"] = "c1"
+        for index in 1...5 {
+            dupes.pages["c\(index)"] = [detail("1", title: "A", tag: "Video", created: 3)]
+            dupes.cursors["c\(index)"] = "c\(index + 1)"
+        }
+        let stalled = makeService(dupes, key: key)
+        stalled.reload()
+        try await waitFor { stalled.phase == .loaded }
+        for _ in 0..<SteamStoreService.maximumStalledPages {
+            stalled.loadMore()
+            try await waitFor { stalled.loadMoreState != .loading }
+        }
+        XCTAssertEqual(stalled.loadMoreState, .failed(NSLocalizedString("steam.store.loadMore.noProgress", comment: "")))
+        let before = dupes.requests.count
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(dupes.requests.count, before, "No request loop")
+    }
+
+    @MainActor
+    func testAStaleResponseNeitherAppendsNorEndsTheNewQuerysLoading() async throws {
+        let fake = FakeSteam()
+        fake.pages["*"] = [detail("1", title: "A", tag: "Video", created: 3)]
+        fake.cursors["*"] = "next"
+        fake.pages["next"] = [detail("2", title: "B", tag: "Video", created: 2)]
+        let store = makeService(fake, key: key)
+        store.reload()
+        try await waitFor { store.phase == .loaded }
+        store.loadMore()
+        XCTAssertEqual(store.loadMoreState, .loading)
+        store.update(searchText: "other words")   // 查询改变：旧的下一页不能追加到新结果
+        try await waitFor { store.phase == .loaded }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(store.items.contains { $0.workshopID == "2" }, "The old page is ignored")
+        XCTAssertEqual(store.items.map(\.workshopID), ["1"])
+    }
+
+    // MARK: - Workshop Search & Sorting Revision
+
+    func testSixWorkshopModesUseTheirOwnPublishedFileBackendEnumAndLabels() throws {
+        let expected: [(SteamWorkshopSortMode, Int, String)] = [
+            (.mostPopular, 3, "最热门"), (.topRatedAllTime, 0, "最受好评（发布至今）"),
+            (.recentlyPublished, 1, "最近发行"), (.recentlyUpdated, 21, "最新更新"),
+            (.searchRelevance, 12, "搜索相关度"), (.totalUniqueSubscribers, 9, "不重复订阅者总计")
+        ]
+        XCTAssertEqual(SteamWorkshopSortMode.allCases, expected.map(\.0))
+        XCTAssertEqual(Set(SteamWorkshopSortMode.allCases).count, 6)
+        XCTAssertEqual(ContentSortMode.available(inSteamStore: false), [.dateAdded, .name, .type],
+                       "Local/favorites/list sorting stays exactly as before")
+        for (mode, raw, title) in expected {
+            var query = SteamStoreQuery()
+            query.searchText = "囍"; query.sortMode = mode
+            XCTAssertEqual(query.publishedFileQueryType.rawValue, raw)
+            XCTAssertEqual(NSLocalizedString(mode.titleKey, comment: ""), title)
+            let url = query.url(key: key, cursor: "official-page")
+            let values = FakeSteam()
+            XCTAssertEqual(values.query(url, "query_type"), [String(raw)])
+            XCTAssertEqual(values.query(url, "search_text"), ["囍"])
+            XCTAssertEqual(values.query(url, "language"), ["0"])
+            XCTAssertEqual(values.query(url, "days"), mode == .mostPopular ? ["7"] : [])
+            XCTAssertEqual(values.query(url, "include_recent_votes_only"), mode == .mostPopular ? ["false"] : [])
+        }
+        XCTAssertEqual(SteamPublishedFileQueryType.rankedByTextSearch.rawValue, 12,
+                       "11 in this API is votes-up; ISteamUGC's text search is a different enum")
+        XCTAssertEqual(SteamPublishedFileQueryType.rankedByLastUpdatedDate.rawValue, 21)
+        XCTAssertEqual(SteamPublishedFileQueryType.rankedByTotalUniqueSubscriptions.rawValue, 9)
+    }
+
+    func testCacheIncludesOfficialModeLanguageTrendAndFiltersAndInvalidatesOldRankCaches() {
+        var query = SteamStoreQuery(); query.searchText = "囍"
+        let modes = SteamWorkshopSortMode.allCases.map { mode -> String in
+            var value = query; value.sortMode = mode; return value.cacheKey
+        }
+        XCTAssertEqual(Set(modes).count, 6)
+        let original = query.cacheKey
+        query.language = 6
+        XCTAssertNotEqual(query.cacheKey, original)
+        let translated = query.cacheKey
+        query.filters.select("Anime", in: .genre)
+        XCTAssertNotEqual(query.cacheKey, translated)
+        let filtered = query.cacheKey
+        query.hiddenAgeRatings = ["Mature"]
+        XCTAssertNotEqual(query.cacheKey, filtered)
+        XCTAssertTrue(query.cacheKey.hasPrefix("workshop-rank-v2|"), "Old author-boost caches cannot be reused")
+        XCTAssertFalse(query.cacheKey.contains(key))
+    }
+
+    @MainActor
+    func testNewKeywordDefaultsToRelevanceManualSortAndClearingQueryStayCoherent() async throws {
+        let fake = FakeSteam(); let store = makeService(fake, key: key)
+        store.update()
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.effectiveSortMode, .recentlyPublished, "Retain the previous empty-page default")
+        store.update(sortMode: .mostPopular)
+        try await waitFor { store.phase == .loaded }
+        store.update(searchText: "囍")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.effectiveSortMode, .searchRelevance)
+        store.update(sortMode: .totalUniqueSubscribers)
+        try await waitFor { store.phase == .loaded }
+        store.update(filters: SteamFilterState())
+        store.update(searchText: " 囍 ")
+        XCTAssertEqual(store.query.effectiveSortMode, .totalUniqueSubscribers, "Editing only whitespace does not erase manual choice")
+        store.update(typeFilter: .only([.scene]))
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.queryType, 9)
+        store.update(searchText: "赛博朋克")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.queryType, 12, "A new submitted keyword resets to relevance")
+        store.update(searchText: "")
+        try await waitFor { store.phase == .loaded }
+        XCTAssertEqual(store.query.sortMode, .recentlyPublished)
+        store.update(sortMode: .searchRelevance)
+        XCTAssertEqual(store.query.sortMode, .recentlyPublished, "No empty RankedByTextSearch is sent or checked")
+        XCTAssertFalse(fake.requests.contains { fake.query($0, "query_type") == ["12"] && fake.query($0, "search_text").isEmpty })
+    }
+
+    @MainActor
+    func testSixKeywordsBySixModesKeepOfficialQueryPaginationRankAndIdentity() async throws {
+        let terms = ["囍", "赛博朋克", "Aurora", "Cyberpunk 2077", "no-such-kinetic-fixture-93d2", "spongebob"]
+        let mappings: [(SteamWorkshopSortMode, String)] = [(.mostPopular, "3"), (.topRatedAllTime, "0"),
+            (.recentlyPublished, "1"), (.recentlyUpdated, "21"), (.searchRelevance, "12"), (.totalUniqueSubscribers, "9")]
+        let fake = FakeSteam(); let store = makeService(fake, key: key)
+        fake.players = ["76561190000000001": "Known metadata"]
+        var index = 0
+        for term in terms {
+            for (mode, raw) in mappings {
+                index += 1
+                let first = String(10000 + index * 10), second = String(10001 + index * 10)
+                let third = String(10002 + index * 10), fourth = String(10003 + index * 10)
+                let cursor = "matrix-\(index)"
+                let noResults = term.hasPrefix("no-such-")
+                fake.queryPages["\(raw)|\(term)|*"] = noResults ? [] : [
+                    detail(first, title: "Z highest server rank", tag: "Scene", created: 100),
+                    detail(second, title: "A lower server rank", tag: "Scene", created: 300),
+                    detail(first, title: "duplicate later", tag: "Scene", created: 500)]
+                fake.cursors["*"] = noResults ? "*" : cursor
+                fake.queryPages["\(raw)|\(term)|\(cursor)"] = [
+                    detail(second, title: "previous page duplicate", tag: "Scene", created: 600),
+                    detail(third, title: "A lower server rank", tag: "Scene", created: 700),
+                    detail(third, title: "duplicate within page", tag: "Scene", created: 800),
+                    detail(fourth, title: "Z highest server rank", tag: "Scene", created: 900)]
+                fake.cursors[cursor] = cursor
+                var filters = SteamFilterState(); filters.toggleType("Scene"); filters.select("Anime", in: .genre)
+                store.update(searchText: term, filters: filters, sortMode: mode)
+                try await waitFor { store.phase == .loaded }
+                let firstRequest = try XCTUnwrap(fake.requests.last { $0.path.contains("QueryFiles") })
+                XCTAssertEqual(fake.query(firstRequest, "query_type"), [raw])
+                XCTAssertEqual(fake.query(firstRequest, "search_text"), [term])
+                XCTAssertEqual(fake.query(firstRequest, "cursor"), ["*"])
+                XCTAssertEqual(fake.query(firstRequest, "requiredtags"), ["Anime", "Scene"])
+                XCTAssertEqual(store.items.map(\.workshopID), noResults ? [] : [first, second])
+                if noResults { XCTAssertFalse(store.canLoadMore); continue }
+                XCTAssertEqual(store.items.map(\.serverRankIndex), [0, 1])
+                store.loadMore()
+                try await waitFor { !store.isLoadingMore }
+                let nextRequest = try XCTUnwrap(fake.requests.last { $0.path.contains("QueryFiles") })
+                XCTAssertEqual(fake.query(nextRequest, "query_type"), [raw])
+                XCTAssertEqual(fake.query(nextRequest, "search_text"), [term])
+                XCTAssertEqual(fake.query(nextRequest, "cursor"), [cursor])
+                XCTAssertEqual(fake.query(nextRequest, "requiredtags"), fake.query(firstRequest, "requiredtags"))
+                XCTAssertEqual(fake.query(nextRequest, "language"), fake.query(firstRequest, "language"))
+                XCTAssertEqual(store.items.map(\.workshopID), [first, second, third, fourth])
+                XCTAssertEqual(store.items.map(\.serverRankIndex), [0, 1, 4, 6])
+                XCTAssertEqual(store.items.first?.title, "Z highest server rank")
+                XCTAssertEqual(store.items[1].title, store.items[2].title, "Equal titles with different IDs remain distinct")
+                XCTAssertEqual(store.displayedItems(options: ContentViewOptions(sortMode: .name)).map(\.workshopID),
+                               [first, second, third, fourth], "No local secondary ranking")
+                XCTAssertFalse(store.canLoadMore)
+            }
+        }
+        XCTAssertFalse(fake.requests.contains { $0.path.contains("GetUserFiles") || $0.path.contains("ResolveVanityURL") })
+    }
+
+    @MainActor
+    func testLateOldFirstPageAndMetadataCannotMoveNewResults() async throws {
+        let old = [detail("1", title: "old", tag: "Video", created: 100)]
+        let current = [detail("3", title: "Z", tag: "Video", created: 100, creator: "76561190000000003"),
+                       detail("2", title: "A", tag: "Video", created: 900, creator: "76561190000000002")]
+        var held: CheckedContinuation<(Data, Int), Error>?
+        var metadata: CheckedContinuation<(Data, Int), Error>?
+        let root = makeRoot()
+        let store = SteamStoreService(keyStore: MemorySteamAPIKeyStore(key), cacheDirectory: root,
+            posters: SteamPosterCache(directory: nil), fetch: { url in
+                let args = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                if url.path.contains("GetPlayerSummaries") {
+                    return try await withCheckedThrowingContinuation { metadata = $0 }
+                }
+                if args.first(where: { $0.name == "search_text" })?.value == "old" {
+                    return try await withCheckedThrowingContinuation { held = $0 }
+                }
+                return (try JSONSerialization.data(withJSONObject: ["response": ["publishedfiledetails": current]]), 200)
+            })
+        store.update(searchText: "old")
+        try await waitFor { held != nil }
+        store.update(searchText: "囍", sortMode: .recentlyUpdated)
+        try await waitFor { store.phase == .loaded && metadata != nil }
+        XCTAssertEqual(store.items.map(\.workshopID), ["3", "2"])
+        let initialRanks = store.items.map(\.serverRankIndex)
+        held?.resume(returning: (try JSONSerialization.data(withJSONObject: ["response": ["publishedfiledetails": old]]), 200))
+        held = nil
+        metadata?.resume(returning: (try JSONSerialization.data(withJSONObject: ["response": ["players": [
+            ["steamid": "76561190000000002", "personaname": "A metadata arrived first"],
+            ["steamid": "76561190000000003", "personaname": "Z metadata arrived later"]]]]), 200))
+        metadata = nil
+        try await waitFor { store.items.allSatisfy { $0.authorName != nil } }
+        XCTAssertEqual(store.items.map(\.workshopID), ["3", "2"])
+        XCTAssertEqual(store.items.map(\.serverRankIndex), initialRanks)
+        XCTAssertEqual(store.query.queryType, 21)
+        XCTAssertEqual(store.query.trimmedSearch, "囍")
+    }
+
+    func testDebugSearchDiagnosticContainsThirtyServerRanksButNoCredentials() throws {
+        #if DEBUG
+        var query = SteamStoreQuery(); query.searchText = "Cyberpunk 2077"; query.sortMode = .searchRelevance
+        let items = (0..<40).map { index -> SteamStoreItem in
+            var item = SteamStoreResponse.item(from: detail(String(index + 1), title: "Item \(index)", tag: "Video", created: index))!
+            item.serverRankIndex = index; return item
+        }
+        let text = SteamSearchDiagnostics.snapshot(query: query, cursor: "next", source: "server", server: items, display: items)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual((body["SERVER"] as? [[String: Any]])?.count, 30)
+        XCTAssertEqual((body["DISPLAY"] as? [[String: Any]])?.count, 30)
+        XCTAssertEqual(body["steamQueryType"] as? Int, 12)
+        XCTAssertEqual(body["backend"] as? String, "IPublishedFileService.QueryFiles")
+        XCTAssertEqual(body["cursorOrPage"] as? String, "next")
+        XCTAssertFalse(text.contains(key)); XCTAssertFalse(text.contains("api.steampowered.com"))
+        XCTAssertNil(body["key"]); XCTAssertNil(body["session"]); XCTAssertNil(body["password"])
+        #endif
     }
 
     // MARK: - 卡片状态与 Poster

@@ -5,6 +5,8 @@ import Foundation
 @MainActor
 final class SettingsStore: ObservableObject {
     static let storageKey = "Kinetic.Settings.v1"
+    /// 2026-10-07：旧版本曾默认关闭两个年龄过滤；仅首次采用新默认值时更新一次。
+    static let steamAgeRatingDefaultsKey = "Kinetic.Settings.SteamAgeRatingDefaults.v1"
 
     @Published private(set) var state: SettingsState
     private let defaults: UserDefaults
@@ -17,6 +19,25 @@ final class SettingsStore: ObservableObject {
         } else {
             state = SettingsState()
         }
+
+        // 只更新这两个开关；完成后保留用户之后的手动选择，不能每次启动强制开启。
+        if !defaults.bool(forKey: Self.steamAgeRatingDefaultsKey) {
+            var updated = state
+            updated.steamHideQuestionable = true
+            updated.steamHideMature = true
+            if let data = try? JSONEncoder().encode(updated) {
+                defaults.set(data, forKey: Self.storageKey)
+                defaults.set(true, forKey: Self.steamAgeRatingDefaultsKey)
+                state = updated
+            }
+        }
+    }
+
+    /// Module 50: settings restored from a backup at launch replace the whole state.
+    func replace(with value: SettingsState) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        defaults.set(data, forKey: Self.storageKey)
+        state = value
     }
 
     func set<Value: Equatable>(_ keyPath: WritableKeyPath<SettingsState, Value>, to value: Value) {

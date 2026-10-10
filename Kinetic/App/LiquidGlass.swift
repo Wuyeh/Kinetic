@@ -127,3 +127,42 @@ private struct WindowGlassView: NSViewRepresentable {
         }
     }
 }
+
+/// 叠加层设置窗口（粒子效果、桌面组件、辉光管时钟、Agent 会话）的标题栏（用户要求 2026-10-08）：
+/// 窗口背景延伸到标题栏下方，不再露出桌面；标题改用与正文相同的常规字重，由 `OverlaySettingsWindowContent` 绘制。
+enum OverlaySettingsWindowChrome {
+    static func apply(to window: NSWindow) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        // 系统标题字重较粗，隐藏后由内容绘制；`window.title` 仍保留给窗口菜单与辅助功能。
+        window.titleVisibility = .hidden
+    }
+}
+
+/// 设置窗口的根视图：内容留在标题栏下方，标题以常规字重居中画在标题栏里。
+struct OverlaySettingsWindowContent<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    @Environment(\.controlActiveState) private var activeState
+
+    var body: some View {
+        GeometryReader { proxy in
+            let titleHeight = proxy.safeAreaInsets.top
+            content
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .overlay(alignment: .top) {
+                    Text(verbatim: title)
+                        .font(.system(size: NSFont.systemFontSize))
+                        .foregroundStyle(activeState == .inactive ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        .lineLimit(1).truncationMode(.tail)
+                        .padding(.horizontal, 80)
+                        .frame(width: proxy.size.width, height: titleHeight)
+                        .offset(y: -titleHeight)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+        }
+        .background { WindowGlassBackground(style: .sidebar).ignoresSafeArea() }
+    }
+}

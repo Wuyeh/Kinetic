@@ -4,6 +4,8 @@ import Foundation
 enum WallpaperRuntimeEvent: Equatable, Sendable {
     /// 用户明确应用一张壁纸（双击、Hover「应用」、Onboarding 等最终都走这里）。
     case apply(Wallpaper.ID)
+    /// Explicit settings reload of the current identity; ordinary Apply remains idempotent.
+    case reloadActive(Wallpaper.ID)
     case preparationSucceeded(Wallpaper.ID)
     case preparationFailed(Wallpaper.ID)
     /// 当前 Active Renderer 运行中失败；Renderer 自己负责保留静态画面。
@@ -82,6 +84,14 @@ struct WallpaperRuntimeMachine: Equatable, Sendable {
         switch event {
         case .apply(let id):
             return apply(id)
+        case .reloadActive(let id):
+            guard activeWallpaperID == id, !isActiveFailed,
+                  candidateWallpaperID == nil || candidateWallpaperID == id else { return [] }
+            var effects: [WallpaperRuntimeEffect] = []
+            if candidateWallpaperID != nil { effects.append(.discardCandidate) }
+            candidateWallpaperID = id
+            effects.append(.prepareCandidate(id))
+            return effects
         case .reenable:
             guard isStopped, candidateWallpaperID == nil, let last = lastActiveWallpaperID else { return [] }
             candidateWallpaperID = last

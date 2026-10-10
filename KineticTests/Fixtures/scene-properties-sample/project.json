@@ -1,0 +1,51 @@
+{
+  "type": "scene",
+  "file": "scene.json",
+  "title": "Kinetic scene properties sample",
+  "general": {
+    "properties": {
+      "showpanel": {
+        "type": "bool",
+        "text": "显示波纹面板",
+        "value": true,
+        "order": 1
+      },
+      "speed": {
+        "type": "slider",
+        "text": "面板运动速度",
+        "value": 1,
+        "min": 0,
+        "max": 5,
+        "step": 0.1,
+        "order": 2
+      },
+      "direction": {
+        "type": "combo",
+        "text": "运动方向",
+        "value": 1,
+        "options": [
+          {
+            "label": "正向",
+            "value": 1
+          },
+          {
+            "label": "反向",
+            "value": -1
+          }
+        ],
+        "order": 3
+      },
+      "tint": {
+        "type": "color",
+        "text": "背景颜色",
+        "value": "0.62 0.22 0.08",
+        "order": 4
+      },
+      "note": {
+        "type": "text",
+        "text": "点击保存并应用后，只有 A 的属性验证场景会更新。",
+        "order": 5
+      }
+    }
+  }
+}

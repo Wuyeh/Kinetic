@@ -135,7 +135,10 @@ extension WPEMetalSceneRenderer {
                     scales: liveTransforms.scales,
                     angles: liveTransforms.angles,
                     parentByID: objectParentByID,
-                    hostTransforms: layerAncestorLocalTransformsByID
+                    hostTransforms: layerAncestorLocalTransformsByID,
+                    parentOriginShifts: textParentOriginShifts(
+                        liveOrigins: liveTransforms.origins, scales: liveTransforms.scales, angles: liveTransforms.angles
+                    )
                 )
         }
         // Aggregate the complete per-instance cursor burst before claiming a VM job.

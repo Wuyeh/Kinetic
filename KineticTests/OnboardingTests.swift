@@ -247,4 +247,102 @@ final class OnboardingTests: XCTestCase {
         await waitUntil { onboarding.hasSetWallpaper }
         XCTAssertEqual(env.library.wallpapers.map(\.name), ["蓝色演示"])
     }
+
+    // MARK: Module 56
+
+    /// 两台显示器：先弹出选择窗口，不导入、不应用；选了副屏后只有副屏换上演示。
+    func testMultipleDisplaysAskWhichDisplayAndApplyOnlyThere() async throws {
+        let env = try environment()
+        let second = DisplayID("second")
+        XCTAssertTrue(env.runtime.addDisplay(second, name: "副屏", host: StubDesktop()))
+        let demos = try fixtureDemos()
+        let onboarding = controller(env, demos: demos)
+
+        await onboarding.setAsWallpaper(demos[0])
+        XCTAssertEqual(onboarding.demoAwaitingDisplay?.id, "blue")
+        XCTAssertNil(onboarding.applyingDemoID)
+        XCTAssertTrue(env.library.wallpapers.isEmpty, "选显示器之前不导入")
+        XCTAssertEqual(onboarding.displayItems.map(\.id), [.main, second])
+        XCTAssertEqual(onboarding.displayItems.last?.name, "副屏")
+
+        onboarding.cancelDisplayChoice()
+        XCTAssertNil(onboarding.demoAwaitingDisplay)
+
+        await onboarding.setAsWallpaper(demos[0])
+        await onboarding.chooseDisplay(second)
+        await waitUntil { onboarding.hasSetWallpaper }
+        let imported = try XCTUnwrap(env.library.wallpapers.first)
+        XCTAssertEqual(env.runtime.summary.displays(showing: imported.id), [second])
+        XCTAssertNil(env.runtime.state(of: .main)?.activeWallpaperID, "主屏不变")
+        XCTAssertEqual(onboarding.status(of: demos[0]), .idle, "多台显示器时还可以设到另一台")
+
+        // 再设到主屏：不重复导入。
+        await onboarding.setAsWallpaper(demos[0])
+        await onboarding.chooseDisplay(.main)
+        await waitUntil { env.runtime.summary.displays(showing: imported.id).count == 2 }
+        XCTAssertEqual(Set(env.runtime.summary.displays(showing: imported.id)), [.main, second])
+        XCTAssertEqual(env.library.wallpapers.count, 1)
+    }
+
+    /// 选择时那台显示器已经断开：什么都不做。
+    func testChoosingADisconnectedDisplayDoesNothing() async throws {
+        let env = try environment()
+        env.runtime.addDisplay(DisplayID("second"), host: StubDesktop())
+        let demos = try fixtureDemos()
+        let onboarding = controller(env, demos: demos)
+        await onboarding.setAsWallpaper(demos[0])
+        await onboarding.chooseDisplay(DisplayID("gone"))
+        XCTAssertNil(onboarding.demoAwaitingDisplay)
+        XCTAssertNil(onboarding.applyingDemoID)
+        XCTAssertTrue(env.library.wallpapers.isEmpty)
+    }
+
+    func testNoDisplayShowsAnInlineError() async throws {
+        let base = try environment()
+        let runtime = WallpaperRuntimeManager(makeRenderer: { RecordingRenderer(wallpaper: $0, failure: nil) })
+        let env = Environment(library: base.library, importer: base.importer, runtime: runtime, store: base.store)
+        let onboarding = controller(env, demos: try fixtureDemos())
+        await onboarding.setAsWallpaper(onboarding.demos[0])
+        XCTAssertEqual(onboarding.errorMessage, "现在没有可用的显示器。")
+        XCTAssertTrue(env.library.wallpapers.isEmpty)
+    }
+
+    /// 「继续」到「了解 Kinetic」，「开始使用」结束；帮助 › 显示欢迎页从演示页重新开始。
+    func testTourFinishAndShowAgain() async throws {
+        let env = try environment()
+        let demos = try fixtureDemos()
+        let onboarding = controller(env, demos: demos)
+        await onboarding.setAsWallpaper(demos[0])
+        await waitUntil { onboarding.hasSetWallpaper }
+        XCTAssertEqual(onboarding.phase, .demos)
+        onboarding.continueToTour()
+        XCTAssertEqual(onboarding.phase, .tour)
+        XCTAssertTrue(onboarding.isWelcomeVisible)
+        onboarding.finish()
+        XCTAssertFalse(onboarding.isWelcomeVisible)
+        XCTAssertFalse(controller(env, demos: demos).isWelcomeVisible, "完成后下次启动不再显示")
+
+        onboarding.showAgain()
+        XCTAssertTrue(onboarding.isWelcomeVisible)
+        XCTAssertEqual(onboarding.phase, .demos)
+        XCTAssertFalse(onboarding.hasSetWallpaper)
+        XCTAssertEqual(onboarding.status(of: demos[0]), .active, "已设置的演示仍显示为使用中")
+        onboarding.finish()
+        XCTAssertFalse(controller(env, demos: demos).isWelcomeVisible)
+    }
+
+    /// 离屏截图：「了解 Kinetic」与两台显示器时的选择窗口，浅色 / 深色。
+    func testWelcomeSnapshots() async throws {
+        let env = try environment()
+        env.runtime.addDisplay(DisplayID("second"), name: "Studio Display", host: StubDesktop())
+        let onboarding = controller(env, demos: try fixtureDemos())
+        let size = CGSize(width: 1100, height: 720)
+        let tour = WelcomeTourView(onFinish: {})
+        try R4SnapshotTests.render(tour, size: size, name: "module56-tour")
+        try R4SnapshotTests.render(tour, size: size, name: "module56-tour-dark", appearance: .darkAqua)
+        await onboarding.setAsWallpaper(onboarding.demos[0])
+        let picker = WelcomeView(onboarding: onboarding)
+        try R4SnapshotTests.render(picker, size: size, name: "module56-display-choice")
+        try R4SnapshotTests.render(picker, size: size, name: "module56-display-choice-dark", appearance: .darkAqua)
+    }
 }

@@ -127,12 +127,13 @@ struct WPEComposeLayerUniforms {
     var flags: SIMD4<Float>
 }
 
-/// Renderer-local (no `VideoFitMode` AVFoundation semantics). `stretch` = full-bleed (may distort); `contain` = letterbox; `cover` = crop-to-fill; `center` = original source size centered.
+/// Renderer-local (no `VideoFitMode` AVFoundation semantics). `stretch` = full-bleed (may distort); `contain` = letterbox; `cover` = crop-to-fill; `center` = original source size centered; `custom` = a user-chosen region of the source, always filling the target (Kinetic).
 enum WPEPresentFitMode: Equatable {
     case stretch
     case contain
     case cover
     case center
+    case custom(KineticSceneCrop)
 }
 
 extension WPEPresentFitMode {
@@ -199,6 +200,12 @@ struct WPEPresentUniforms {
                 u.uvScale.y = s
                 u.uvOffset.y = (1 - s) / 2
             }
+        case .custom(let crop):
+            // Full-bleed quad; the source UV is the chosen region (top-left origin, like the UVs).
+            let region = crop.region(source: CGSize(width: sourceWidth, height: sourceHeight),
+                                     target: CGSize(width: targetWidth, height: targetHeight))
+            u.uvScale = SIMD2<Float>(Float(region.width), Float(region.height))
+            u.uvOffset = SIMD2<Float>(Float(region.minX), Float(region.minY))
         }
         return u
     }

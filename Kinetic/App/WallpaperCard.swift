@@ -159,7 +159,8 @@ enum CardDisplayDragEvent {
 }
 
 /// 辅助点按在鼠标原位弹出系统菜单；普通鼠标移动、单击、双击和按钮点击交给 SwiftUI 卡片。
-private struct WallpaperSecondaryClickSurface: NSViewRepresentable {
+/// R4：Steam 在线卡片也使用同一个菜单入口。
+struct WallpaperSecondaryClickSurface: NSViewRepresentable {
     let menuProvider: (NSView) -> NSMenu
 
     func makeNSView(context: Context) -> SecondaryClickView { SecondaryClickView() }

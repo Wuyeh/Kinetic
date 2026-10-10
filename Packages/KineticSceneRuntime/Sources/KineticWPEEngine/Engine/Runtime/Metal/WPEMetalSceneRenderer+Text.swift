@@ -31,16 +31,25 @@ extension WPEMetalSceneRenderer {
         var updates: [String: (layout: WPETextLayoutSnapshot, initial: WPETextLayoutSnapshot)] = [:]
         var payloads: [String: WPETextRenderPayload] = [:]
         var obsoleteTargetNames: Set<String> = []
+        var measuredSizes: [String: SIMD2<Double>] = [:]
+        // Scripts read these as `layer.size` on their next tick.
+        defer { sceneScriptSharedState?.publishTextLayerSizes(measuredSizes) }
 
         for plan in textRenderPlans {
             guard let layer = layerByID[plan.object.id] else { continue }
             let resolvedText = liveTextByID[plan.object.id] ?? plan.object.text
+            // Kinetic: the frame layer already carries the timeline claim (a `startpaused` track holds its first
+            // key until a script plays it); the object's own track would free-run and show hidden text.
             let resolvedAlpha = liveTextAlpha[plan.object.id]
-                ?? plan.object.resolvedAlpha(at: lastRuntimeUniforms?.time ?? 0)
+                ?? layer.geometry.alphaAnimation?.scalar(at: lastRuntimeUniforms?.time ?? 0)
+                ?? layer.geometry.alpha
             let liveObject = plan.object.withLiveText(
                 resolvedText,
                 alpha: plan.mode == .offscreen ? 1 : resolvedAlpha,
-                color: transforms.colors[plan.object.id]
+                color: transforms.colors[plan.object.id],
+                pointSize: liveTextPointSizes[plan.object.id],
+                horizontalAlignment: liveLayerPresentation[plan.object.id]?.horizontalAlignment,
+                verticalAlignment: liveLayerPresentation[plan.object.id]?.verticalAlignment
             )
             let key = WPETextRenderPlanner.layoutKey(for: liveObject)
             let previous = textLayoutCache[plan.object.id]
@@ -57,6 +66,7 @@ extension WPEMetalSceneRenderer {
                 }
             }
             updates[plan.object.id] = (layout, plan.initialLayout)
+            measuredSizes[plan.object.id] = Self.scriptTextSize(layout, padding: liveObject.padding)
 
             let isVisible = (liveTextVisibility[plan.object.id] ?? plan.object.visible)
                 && ancestorChainVisible(plan.object.id)
@@ -116,6 +126,13 @@ extension WPEMetalSceneRenderer {
             payloads: payloads,
             obsoleteTargetNames: obsoleteTargetNames
         )
+    }
+
+    /// WPE reports a text layer's size as its text surface: the laid-out block plus the padding gutter, zero when empty.
+    static func scriptTextSize(_ layout: WPETextLayoutSnapshot, padding: Double) -> SIMD2<Double> {
+        guard layout.blockSize.width > 0 || layout.blockSize.height > 0 else { return .zero }
+        let gutter = max(padding, 0) * 2
+        return SIMD2<Double>(Double(layout.blockSize.width) + gutter, Double(layout.blockSize.height) + gutter)
     }
 
     private func offscreenBackground(
@@ -233,16 +250,22 @@ extension WPEMetalSceneRenderer {
     // MARK: - Live script plumbing
 
     /// Text origin scripts address the anchor, while graph transforms address the synthesized layer centre. Derive that offset from the current live scale/rotation instead of freezing a load-time approximation.
+    /// Kinetic: a live scale or rotation without a live origin moves the centre too (a label mirrored by a `scale`
+    /// script would otherwise keep its load-time centre and draw on the wrong side of its anchor), so those texts
+    /// re-anchor at their authored origin.
     func applyingTextLayerOriginOffsets(
         _ origins: [String: SIMD3<Double>],
         scales: [String: SIMD3<Double>],
         angles: [String: SIMD3<Double>]
     ) -> [String: SIMD3<Double>] {
-        guard !origins.isEmpty, !textRenderPlans.isEmpty else { return origins }
+        guard !origins.isEmpty || !scales.isEmpty || !angles.isEmpty, !textRenderPlans.isEmpty else { return origins }
         var shifted = origins
-        for plan in textRenderPlans where shifted[plan.object.id] != nil {
+        for plan in textRenderPlans where Self.textAnchorIsLive(plan.object.id, origins: origins, scales: scales, angles: angles) {
+            if shifted[plan.object.id] == nil {
+                shifted[plan.object.id] = plan.object.localOrigin ?? plan.object.origin
+            }
             let scale = scales[plan.object.id] ?? plan.object.localScale ?? plan.object.scale
-            let angle = angles[plan.object.id]?.z ?? plan.object.angles.z
+            let angle = angles[plan.object.id]?.z ?? (plan.object.localAngles ?? plan.object.angles).z
             let offset = Self.transformedTextOffset(
                 plan.initialLayout.centerOffsetFromObjectOrigin,
                 scale: scale,
@@ -251,6 +274,37 @@ extension WPEMetalSceneRenderer {
             shifted[plan.object.id]! += SIMD3<Double>(offset.x, offset.y, 0)
         }
         return shifted
+    }
+
+    /// Kinetic: how far each text layer's synthesized quad origin sits from its text origin (the anchor its children
+    /// are authored against), in its parent's space. Mirrors the shift baked into the layer's geometry at load
+    /// (`localScale ?? scale`, authored angles) or applied to a live script origin (`applyingTextLayerOriginOffsets`).
+    func textParentOriginShifts(
+        liveOrigins: [String: SIMD3<Double>],
+        scales: [String: SIMD3<Double>],
+        angles: [String: SIMD3<Double>]
+    ) -> [String: SIMD3<Double>] {
+        guard !textRenderPlans.isEmpty else { return [:] }
+        var shifts: [String: SIMD3<Double>] = [:]
+        for plan in textRenderPlans {
+            let isLive = Self.textAnchorIsLive(plan.object.id, origins: liveOrigins, scales: scales, angles: angles)
+            let scale = isLive ? (scales[plan.object.id] ?? plan.object.localScale ?? plan.object.scale)
+                : (plan.object.localScale ?? plan.object.scale)
+            let authoredAngle = (plan.object.localAngles ?? plan.object.angles).z
+            let angle = isLive ? (angles[plan.object.id]?.z ?? authoredAngle) : authoredAngle
+            let offset = Self.transformedTextOffset(plan.initialLayout.centerOffsetFromObjectOrigin, scale: scale, angle: angle)
+            shifts[plan.object.id] = SIMD3<Double>(offset.x, offset.y, 0)
+        }
+        return shifts
+    }
+
+    static func textAnchorIsLive(
+        _ id: String,
+        origins: [String: SIMD3<Double>],
+        scales: [String: SIMD3<Double>],
+        angles: [String: SIMD3<Double>]
+    ) -> Bool {
+        origins[id] != nil || scales[id] != nil || angles[id] != nil
     }
 
     func layerColorsExcludingText(

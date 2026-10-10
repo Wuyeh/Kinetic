@@ -1978,6 +1978,17 @@ struct WPESceneScriptLayerInfo: Sendable {
     let particleInstanceSeed: WPEParticleInstanceValues
     /// Complete load-time configuration, never synthesized from mutable layer state.
     let initialConfiguration: WPESceneJSONValue?
+    /// `origin`/`scale` above are parse-time WORLD values; these are the authored parent-relative ones.
+    /// Nil when the layer has no parent (or the kind keeps no local copy), where the two agree.
+    let localOrigin: SIMD3<Double>?
+    let localScale: SIMD3<Double>?
+    /// A text layer's `size` follows its current text (WPE measures the laid-out block), not the authored box.
+    let isText: Bool
+
+    /// What `layer.origin` / `layer.scale` read before a script writes them: parent-relative, like the
+    /// scene property a script assigns back.
+    var scriptOrigin: SIMD3<Double> { localOrigin ?? SIMD3<Double>(origin.x, origin.y, originZ) }
+    var scriptScale: SIMD3<Double> { localScale ?? scale }
 
     init(
         id: String,
@@ -1993,7 +2004,10 @@ struct WPESceneScriptLayerInfo: Sendable {
         parallaxDepth: SIMD2<Double> = .zero,
         isParticleSystem: Bool = false,
         particleInstanceSeed: WPEParticleInstanceValues = .init(),
-        initialConfiguration: WPESceneJSONValue? = nil
+        initialConfiguration: WPESceneJSONValue? = nil,
+        localOrigin: SIMD3<Double>? = nil,
+        localScale: SIMD3<Double>? = nil,
+        isText: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -2001,6 +2015,9 @@ struct WPESceneScriptLayerInfo: Sendable {
         self.origin = origin
         self.originZ = originZ
         self.scale = scale
+        self.localOrigin = localOrigin
+        self.localScale = localScale
+        self.isText = isText
         self.angles = angles
         self.index = index
         self.parentName = parentName
@@ -2124,6 +2141,7 @@ final class WPESharedScriptState: @unchecked Sendable {
     }
 
     private var liveLayerTransformsByID: [String: LiveLayerTransform] = [:]
+    private var liveTextLayerSizesByID: [String: SIMD2<Double>] = [:]
     private var cursorProjectionMatrix: [Double]?
     private var inverseCursorProjection: simd_double4x4?
     private var cursorSceneMotion: WPESceneCameraMotionSample?
@@ -2489,6 +2507,19 @@ final class WPESharedScriptState: @unchecked Sendable {
     }
 
     /// Publish a detached snapshot; script lanes must not reach into renderer-owned dictionaries.
+    /// Measured text block sizes by object ID, published by the renderer once per frame.
+    func publishTextLayerSizes(_ sizes: [String: SIMD2<Double>]) {
+        lock.lock()
+        liveTextLayerSizesByID = sizes
+        lock.unlock()
+    }
+
+    func textLayerSize(id: String) -> SIMD2<Double>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return liveTextLayerSizesByID[id]
+    }
+
     func publishLayerTransforms(
         origins: [String: SIMD3<Double>],
         scales: [String: SIMD3<Double>],

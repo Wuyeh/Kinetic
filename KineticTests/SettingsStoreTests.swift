@@ -40,6 +40,61 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: defaults).state, SettingsState())
     }
 
+    func testFreshStoreEnablesAndPersistsBothAgeRatingDefaults() throws {
+        let suite = "KineticTests.AgeRatingDefaults.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertTrue(store.state.steamHideQuestionable)
+        XCTAssertTrue(store.state.steamHideMature)
+        XCTAssertTrue(defaults.bool(forKey: SettingsStore.steamAgeRatingDefaultsKey))
+        let data = try XCTUnwrap(defaults.data(forKey: SettingsStore.storageKey))
+        XCTAssertEqual(try JSONDecoder().decode(SettingsState.self, from: data), store.state)
+    }
+
+    func testOldDisabledDefaultsAreEnabledWithoutChangingOtherSettings() throws {
+        let suite = "KineticTests.LegacyAgeRatingDefaults.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var legacy = SettingsState()
+        legacy.appearance = .dark
+        legacy.launchAtLoginEnabled = true
+        legacy.wallpaperAudioEnabled = true
+        legacy.smartPauseEnabled = false
+        legacy.webNetworkAccessEnabled = false
+        legacy.sceneDisplayFit = .fit
+        legacy.smartPauseExcludedApps = ["com.apple.Safari"]
+        legacy.steamHideQuestionable = false
+        legacy.steamHideMature = false
+        defaults.set(try JSONEncoder().encode(legacy), forKey: SettingsStore.storageKey)
+
+        var expected = legacy
+        expected.steamHideQuestionable = true
+        expected.steamHideMature = true
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertEqual(store.state, expected, "Only the two age-rating settings change")
+        XCTAssertEqual(SettingsStore(defaults: defaults).state, expected)
+        let saved = try XCTUnwrap(defaults.data(forKey: SettingsStore.storageKey))
+        XCTAssertEqual(try JSONDecoder().decode(SettingsState.self, from: saved), expected)
+    }
+
+    func testManualDisableAfterMigrationSurvivesRestart() throws {
+        let suite = "KineticTests.AgeRatingChoice.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = SettingsStore(defaults: defaults)
+        store.set(\.steamHideQuestionable, to: false)
+        let firstRestart = SettingsStore(defaults: defaults)
+        XCTAssertFalse(firstRestart.state.steamHideQuestionable)
+        XCTAssertTrue(firstRestart.state.steamHideMature)
+        firstRestart.set(\.steamHideMature, to: false)
+        let secondRestart = SettingsStore(defaults: defaults)
+        XCTAssertEqual(secondRestart.state.steamHiddenAgeRatings, [])
+        XCTAssertTrue(defaults.bool(forKey: SettingsStore.steamAgeRatingDefaultsKey))
+    }
+
     /// 新增「低电量模式时暂停」「使用电池时暂停」之前保存的设置仍完整读取，新选项取默认值。
     func testSettingsSavedBeforePowerOptionsKeepTheirValues() throws {
         let suite = "KineticTests.Settings.\(UUID().uuidString)"
@@ -86,5 +141,21 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(restored.state.webNetworkAccessEnabled, SettingsState().webNetworkAccessEnabled)
         restored.set(\.smartPauseExcludedApps, to: ["com.apple.Preview"])
         XCTAssertEqual(SettingsStore(defaults: defaults).state.smartPauseExcludedApps, ["com.apple.Preview"])
+    }
+
+    /// 28.4：场景壁纸显示方式默认「自动」（用户决定）；保存后恢复；旧版本设置没有这一项、或以后写入未知值时回到默认，其他设置不受影响。
+    @MainActor
+    func testSceneDisplayFitDefaultsPersistsAndToleratesUnknownValues() throws {
+        let suite = "KineticSceneDisplayFit-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(SettingsState().sceneDisplayFit, .automatic)
+        let store = SettingsStore(defaults: defaults)
+        store.set(\.sceneDisplayFit, to: .fit)
+        XCTAssertEqual(SettingsStore(defaults: defaults).state.sceneDisplayFit, .fit)
+        let legacy = try JSONDecoder().decode(SettingsState.self, from: Data(#"{"appearance":"dark"}"#.utf8))
+        XCTAssertEqual(legacy.sceneDisplayFit, .automatic); XCTAssertEqual(legacy.appearance, .dark)
+        let future = try JSONDecoder().decode(SettingsState.self, from: Data(#"{"appearance":"dark","sceneDisplayFit":"zoom"}"#.utf8))
+        XCTAssertEqual(future.sceneDisplayFit, .automatic); XCTAssertEqual(future.appearance, .dark)
     }
 }

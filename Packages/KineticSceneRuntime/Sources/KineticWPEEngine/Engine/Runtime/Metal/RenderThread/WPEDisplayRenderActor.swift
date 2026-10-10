@@ -495,6 +495,11 @@ actor WPEDisplayRenderActor {
         renderer?.setPresentFitMode(mode)
     }
 
+    /// Kinetic: the loaded scene's authored canvas size (zero before load).
+    func sceneCanvasSize() -> CGSize {
+        renderer?.sceneRenderSize ?? .zero
+    }
+
     func scenePropertyBindings() -> [String: [WPEScenePropertyBinding]] {
         renderer?.scenePropertyBindings ?? [:]
     }

@@ -48,8 +48,9 @@ final class SearchFavoritesTests: XCTestCase {
         XCTAssertEqual(ShellSection.allCases, [.search, .favorites, .local, .steam])
         XCTAssertEqual(ShellSection.local.symbol, LocalLibraryIcon.symbolName)
         XCTAssertEqual(ShellSection.local.title, "本地")
-        XCTAssertEqual(ShellSection.steam.sidebarTitle, "Steam")
-        XCTAssertNil(ShellSection.steam.symbol, "No look-alike symbol stands in for the Steam logo")
+        XCTAssertEqual(ShellSection.steam.sidebarTitle, "Workshop")
+        XCTAssertEqual(ShellSection.steam.symbol, SettingsSection.steam.symbol,
+                       "User revision: Workshop uses the settings controller at the existing sidebar size")
         XCTAssertEqual(ShellSection.favorites.filter, .favorites)
     }
 

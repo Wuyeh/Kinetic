@@ -250,6 +250,34 @@ final class MultiDisplayCoreTests: XCTestCase {
         XCTAssertTrue(h.store.load().assignments.isEmpty)
     }
 
+    /// Module 57：上次意外退出前刚换上的壁纸，这台显示器以停止状态加入、不自动恢复；另一台照常恢复；重新启用后恢复。
+    func testHeldWallpaperStartsStoppedAndCanBeReenabled() async throws {
+        let h = try Harness(); defer { h.cleanup() }
+        h.screens.values = [display(a), display(b)]; h.controller.start()
+        let rain = try h.add("Rain"), sea = try h.add("Sea")
+        h.runtime.apply(rain, to: a); h.runtime.apply(sea, to: b); await settle()
+        h.controller.stopRecording(); h.runtime.shutdown(); h.controller.closeSurfaces()
+
+        let freshRuntime = WallpaperRuntimeManager { Renderer($0) }
+        let freshRegistry = DisplayRegistry(discover: { [displayA = display(a), displayB = display(b)] in [displayA, displayB] })
+        let freshController = MultiDisplayController(registry: freshRegistry, runtime: freshRuntime, library: h.library,
+                                                     store: h.store, legacy: h.legacy, makeSurface: { _, _ in .init(host: Host()) })
+        freshController.restoreHold = { [a] display, id in display == a && id == rain.id }
+        freshController.start(); await settle()
+        XCTAssertEqual(freshRuntime.state(of: a)?.playbackState, .stopped, "不自动恢复出过问题的壁纸")
+        XCTAssertNil(freshRuntime.activeWallpaper(on: a))
+        XCTAssertEqual(freshRuntime.lastActiveWallpaper(on: a)?.id, rain.id, "可以重新启用")
+        XCTAssertEqual(freshRuntime.activeWallpaper(on: b)?.id, sea.id, "另一台照常恢复")
+        let saved = h.store.load().assignments[a.rawValue]
+        XCTAssertEqual(saved?.wallpaperID, rain.id)
+        XCTAssertEqual(saved?.isStopped, true, "用户重新启用之前，之后的启动也保持停止")
+
+        freshRuntime.reenable(.display(a)); await settle()
+        XCTAssertEqual(freshRuntime.activeWallpaper(on: a)?.id, rain.id)
+        XCTAssertEqual(h.store.load().assignments[a.rawValue]?.isStopped, false)
+        freshController.stopRecording(); freshRuntime.shutdown(); freshController.closeSurfaces()
+    }
+
     func testSystemDiscoveryHasUniqueStableIdentitiesAndUsableFrames() {
         let displays = DisplayRegistry.systemDisplays()
         XCTAssertEqual(Set(displays.map(\.id)).count, displays.count)

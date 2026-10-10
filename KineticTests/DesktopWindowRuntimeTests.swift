@@ -10,8 +10,8 @@ final class DesktopWindowRuntimeTests: XCTestCase {
         let window = DesktopWallpaperWindow(frame: NSRect(x: 0, y: 0, width: 640, height: 480), identifier: identifier)
         defer { window.close() }
 
-        XCTAssertGreaterThan(window.level.rawValue, Int(CGWindowLevelForKey(.desktopWindow)))
-        XCTAssertLessThan(window.level.rawValue, Int(CGWindowLevelForKey(.desktopIconWindow)))
+        // Finder's icon level: the only desktop level kept on screen in Edit Widgets mode (2026-10-09).
+        XCTAssertEqual(window.level.rawValue, Int(CGWindowLevelForKey(.desktopIconWindow)))
         XCTAssertLessThan(window.level.rawValue, NSWindow.Level.normal.rawValue)
         XCTAssertLessThan(window.level.rawValue, Int(CGWindowLevelForKey(.dockWindow)))
         XCTAssertLessThan(window.level.rawValue, Int(CGWindowLevelForKey(.mainMenuWindow)))
@@ -24,6 +24,31 @@ final class DesktopWindowRuntimeTests: XCTestCase {
         XCTAssertTrue(window.isExcludedFromWindowsMenu)
         XCTAssertTrue(window.collectionBehavior.contains([.canJoinAllSpaces, .stationary, .ignoresCycle]))
         XCTAssertFalse(window.collectionBehavior.contains(.fullScreenAuxiliary))
+    }
+
+    /// Within the icon level the wallpaper stays behind the overlays and behind Finder's desktop icons.
+    @MainActor
+    func testWallpaperAndOverlaySitUnderFinderIconsInsideTheIconLevel() async throws {
+        let screen = try XCTUnwrap(NSScreen.main)
+        let wallpaper = DesktopWallpaperWindow(frame: screen.frame, identifier: identifier)
+        wallpaper.backgroundColor = .clear; wallpaper.contentView = NSView()
+        let owner = OverlayWindowOwner(displayID: .init("display-order-test"))
+        defer { owner.close(); wallpaper.orderOut(nil); wallpaper.close() }
+        DesktopLayerOrdering.placeWallpaper(wallpaper)
+        try owner.present(NSView(), for: UUID(), display: DesktopDisplay(id: 1, frame: screen.frame, backingScaleFactor: screen.backingScaleFactor))
+        // A later wallpaper re-present still goes behind the overlay.
+        DesktopLayerOrdering.placeWallpaper(wallpaper)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let overlay = try XCTUnwrap(owner.window)
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let order = list.compactMap { $0[kCGWindowNumber as String] as? Int }
+        let wallpaperIndex = try XCTUnwrap(order.firstIndex(of: wallpaper.windowNumber))
+        let overlayIndex = try XCTUnwrap(order.firstIndex(of: overlay.windowNumber))
+        XCTAssertLessThan(overlayIndex, wallpaperIndex, "front-to-back: overlay above wallpaper")
+        if let icons = DesktopLayerOrdering.finderDesktopWindow(covering: screen.frame) {
+            XCTAssertLessThan(try XCTUnwrap(order.firstIndex(of: icons)), overlayIndex, "Finder's icons above both")
+        }
+        XCTAssertTrue(wallpaper.occlusionState.contains(.visible), "Finder's transparent icon window does not count as covering it")
     }
 
     @MainActor

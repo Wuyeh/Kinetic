@@ -26,6 +26,8 @@ final class MultiDisplayController {
     private var subscriptions = Set<AnyCancellable>()
     private var reconciling = false
     private var recording = false
+    /// Module 57：上次意外退出前刚换上的壁纸，这台显示器以停止状态加入、不自动恢复（可以重新启用）。
+    var restoreHold: ((DisplayID, Wallpaper.ID) -> Bool)?
 
     init(registry: DisplayRegistry, runtime: WallpaperRuntimeManager, library: WallpaperLibrary,
          store: DisplayAssignmentStore, legacy: WallpaperRestorationStore,
@@ -115,13 +117,14 @@ final class MultiDisplayController {
             let wallpaper = record.flatMap { library.wallpaper(id: $0.wallpaperID) }.flatMap {
                 $0.supportState == .supported && WallpaperRuntimeManager.isRendererAvailable(for: $0.type) ? $0 : nil
             }
+            let held = wallpaper.map { restoreHold?(display.id, $0.id) == true } ?? false
             guard runtime.addDisplay(display.id, name: display.name, host: surface.host,
                                      frame: display.desktop.frame, scaleFactor: display.desktop.backingScaleFactor,
-                                     stoppedWallpaper: record?.isStopped == true ? wallpaper : nil) else {
+                                     stoppedWallpaper: record?.isStopped == true || held ? wallpaper : nil) else {
                 surface.close(); continue
             }
             surfaces[display.id] = surface
-            if let record, !record.isStopped, let wallpaper {
+            if let record, !record.isStopped, !held, let wallpaper {
                 runtime.apply(wallpaper, to: display.id)
                 if record.isManuallyPaused { runtime.pause(.display(display.id)) }
             }

@@ -538,6 +538,14 @@ final class LivePreviewTests: XCTestCase {
     /// 50 次悬停 / 离开：视频、网页交替，部分未到延迟、部分准备中、部分已播放、部分直接切换。
     func testFiftyHoverCyclesLeaveNoPlayersOrWebViews() async throws {
         let diagnostics = LivePreviewDiagnostics.shared
+        print("LivePreview stress before: running \(diagnostics.runningSessions), players \(diagnostics.alivePlayers), host preview \(WallpaperPreviewCoordinator.shared.activePreviewWallpaperID?.uuidString ?? "none")")
+        // The test exercises its own coordinator. The test host's visible library
+        // must not start another real preview under the user's mouse and pollute
+        // the global weak-resource counters. All stress assertions remain intact.
+        let appPreview = WallpaperPreviewCoordinator.shared
+        let wasSuppressed = appPreview.suppressions.contains(.sessionInactive)
+        appPreview.setSuppressed(.sessionInactive, true)
+        defer { appPreview.setSuppressed(.sessionInactive, wasSuppressed) }
         let coordinator = WallpaperPreviewCoordinator(delay: 0.05, observesSystem: false)
         let cards = [
             wallpaper(.video, url: try fixture("loop", "mp4")),
@@ -558,6 +566,7 @@ final class LivePreviewTests: XCTestCase {
             }
         }
         coordinator.stopAll()
+        print("LivePreview stress after stop: running \(diagnostics.runningSessions), peak \(diagnostics.peakRunningSessions), players \(diagnostics.alivePlayers), host preview \(appPreview.activePreviewWallpaperID?.uuidString ?? "none"), host owns player \((appPreview.activePreview?.session as? VideoPreviewSession)?.player != nil)")
         XCTAssertEqual(diagnostics.runningSessions, 0)
         XCTAssertLessThanOrEqual(diagnostics.peakRunningSessions, 1)
         XCTAssertGreaterThan(diagnostics.sessionsStarted, 0)

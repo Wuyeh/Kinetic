@@ -3,10 +3,14 @@ import WebKit
 import XCTest
 @testable import Kinetic
 
+private enum WebRendererTestError: Error {
+    case animationTimedOut
+}
+
 @MainActor
 final class WebRendererTests: XCTestCase {
     private func fixture() throws -> (Wallpaper, URL) {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("kinetic-web-\(UUID().uuidString)", isDirectory: true)
+        let folder = TestWorkspaceDirectory.make(".build/WebRenderer/Fixtures")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let html = """
         <!doctype html><html><head><meta charset="utf-8"><style>body{background:#345678}</style></head>
@@ -29,7 +33,9 @@ final class WebRendererTests: XCTestCase {
         while !(await condition()) {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 XCTFail("Timed out waiting for WebKit")
-                throw CancellationError()
+                // An assertion deadline is a test failure, not cancellation of the
+                // XCTest task. Cancellation can obscure the original failure during teardown.
+                throw WebRendererTestError.animationTimedOut
             }
             try await Task.sleep(nanoseconds: 30_000_000)
         }

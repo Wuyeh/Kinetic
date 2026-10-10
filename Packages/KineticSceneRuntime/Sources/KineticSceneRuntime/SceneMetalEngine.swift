@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import KineticWPEEngine
 import Metal
 import simd
 
@@ -30,6 +31,10 @@ final class SceneMetalEngine: @unchecked Sendable {
     let device: MTLDevice
     let queue: MTLCommandQueue
     let graph: SceneRenderGraph
+    /// Kinetic display fit for the next encoded frame (set by the runtime from `SceneDisplayFit`).
+    var letterboxed = false
+    /// Kinetic 自定义 region for the next encoded frame; replaces `letterboxed` when set.
+    var crop: KineticSceneCrop?
     private let draws: [Draw]
     private var scriptValues: [String: SceneJSON] = [:]
 
@@ -223,8 +228,16 @@ final class SceneMetalEngine: @unchecked Sendable {
         defer { encoder.endEncoding() }
         let projection = graph.document.size
         let screen = SIMD2(Float(target.width), Float(target.height))
-        let fill = max(screen.x / projection.x, screen.y / projection.y)
-        let cursorShift = (cursor - SIMD2(repeating: 0.5)) * graph.document.cameraParallax * projection
+        // Cover crops the canvas to fill the target; letterboxed (contain) shows all of it with clear-colour bars.
+        var fill = letterboxed ? min(screen.x / projection.x, screen.y / projection.y) : max(screen.x / projection.x, screen.y / projection.y)
+        var cursorShift = (cursor - SIMD2(repeating: 0.5)) * graph.document.cameraParallax * projection
+        if let crop {
+            // The chosen region fills the target; its centre takes the canvas centre's place (world y points up).
+            let region = crop.region(source: CGSize(width: CGFloat(projection.x), height: CGFloat(projection.y)),
+                                     target: CGSize(width: CGFloat(screen.x), height: CGFloat(screen.y)))
+            fill = screen.x / (Float(region.width) * projection.x)
+            cursorShift += (SIMD2(Float(region.midX), Float(1 - region.midY)) - SIMD2(repeating: 0.5)) * projection
+        }
         guard fill.isFinite, cursorShift.x.isFinite, cursorShift.y.isFinite else { throw SceneRuntimeError.malformed("scene projection / cursor transform") }
         let states = try scriptedLayers()
         for (index, draw) in draws.enumerated() {

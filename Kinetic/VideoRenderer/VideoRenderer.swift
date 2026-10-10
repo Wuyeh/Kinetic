@@ -27,7 +27,9 @@ enum VideoRendererError: LocalizedError {
 /// 不写入全局 PlaybackState，不决定 Apply、Smart Pause 或 Crossfade。
 @MainActor
 final class VideoRenderer {
+    static var optionsProvider: ((Wallpaper.ID) -> VideoPlaybackOptions)?
     let wallpaper: Wallpaper
+    private(set) var options: VideoPlaybackOptions
     let contentView = VideoContentView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
     private(set) var player: AVQueuePlayer?
     private(set) var looper: AVPlayerLooper?
@@ -38,6 +40,14 @@ final class VideoRenderer {
     private var lifecycle = Lifecycle.idle
     private var asset: AVURLAsset?
     private var imageGenerator: AVAssetImageGenerator?
+    private var optionsImageGenerator: AVAssetImageGenerator?
+    private var processingComposition: AVVideoComposition?
+    private var loopTemplate: AVPlayerItem?
+    private var optionsGeneration = UUID()
+    private var savedOptionsTask: Task<Void, Never>?
+    private var savedOptionsGeneration = UUID()
+    private var usesUpdatedPausedPoster = false
+    private(set) var posterTime: CMTime = .zero
     private var observations: [NSKeyValueObservation] = []
     private var itemObservation: NSKeyValueObservation?
     private var itemFailureObserver: NSObjectProtocol?
@@ -47,7 +57,10 @@ final class VideoRenderer {
     var completedLoopCount: Int { looper?.loopCount ?? 0 }
     var isMuted: Bool { player?.isMuted ?? true }
 
-    init(wallpaper: Wallpaper) { self.wallpaper = wallpaper }
+    init(wallpaper: Wallpaper, options: VideoPlaybackOptions? = nil) {
+        self.wallpaper = wallpaper
+        self.options = options ?? Self.optionsProvider?(wallpaper.id) ?? .init()
+    }
 
     /// 成功时已解码首帧且播放器 readyToPlay，但不自动播放。
     /// AVPlayerLayer 尚未显示首个视频帧时，内容仍显示静态首帧。
@@ -56,6 +69,7 @@ final class VideoRenderer {
         lifecycle = .preparing
         do {
             try Task.checkCancellation()
+            _ = try options.validated()
             guard wallpaper.type == .video else { throw VideoRendererError.unsupportedWallpaper }
             let url = wallpaper.resourceURL
             guard url.isFileURL, VideoFormats.hasVideoExtension(url) else {
@@ -68,7 +82,10 @@ final class VideoRenderer {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 3840, height: 3840)
+            // Conservative 16 bytes/pixel reservation before generating an image. Keep the legacy
+            // 3840 cap when the selected budget can accommodate it; verify actual row storage too.
+            let posterEdge = min(3840, floor(sqrt(Double(options.preloadBudgetBytes) / 16)))
+            generator.maximumSize = CGSize(width: posterEdge, height: posterEdge)
             self.asset = asset
             imageGenerator = generator
 
@@ -94,18 +111,34 @@ final class VideoRenderer {
                 let tracks = try await asset.loadTracks(withMediaType: .video)
                 try checkPreparation()
                 guard !tracks.isEmpty else { throw VideoRendererError.noVideoTrack }
+                let composition = try await VideoProcessingPipeline.composition(asset: asset, options: options)
+                try checkPreparation()
+                generator.videoComposition = composition
+                processingComposition = composition
                 let (image, _) = try await generator.image(at: .zero)
                 try checkPreparation()
+                guard image.bytesPerRow <= options.preloadBudgetBytes / max(1, image.height) else {
+                    throw VideoOptionsError.preparationBudget
+                }
+                contentView.setDisplayFit(options.displayFit, frame: options.customFrame)
                 contentView.setPoster(image)
 
                 let queue = AVQueuePlayer()
                 // 原生解码路径由 AVFoundation 选择可用的硬件解码器，不强制软件解码。
                 queue.isMuted = true
+                queue.volume = Float(options.volume)
                 queue.preventsDisplaySleepDuringVideoPlayback = false
                 queue.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
                 player = queue
                 contentView.playerLayer.player = queue
-                looper = AVPlayerLooper(player: queue, templateItem: AVPlayerItem(asset: asset))
+                let template = AVPlayerItem(asset: asset)
+                loopTemplate = template
+                template.videoComposition = composition
+                template.appliesPerFrameHDRDisplayMetadata = options.dynamicRange == .automatic
+                // Configure pitch preservation once, before playback; changing the algorithm
+                // on a playing item can make AVFoundation rebuild its audio pipeline at first speed edit.
+                template.audioTimePitchAlgorithm = .spectral
+                looper = AVPlayerLooper(player: queue, templateItem: template)
                 while queue.currentItem?.status != .readyToPlay {
                     try checkPreparation()
                     if queue.status == .failed || queue.currentItem?.status == .failed || looper?.status == .failed {
@@ -135,7 +168,11 @@ final class VideoRenderer {
 
     func play() {
         guard isPrepared else { return }
-        player?.play()
+        let updatedFrame = usesUpdatedPausedPoster
+        usesUpdatedPausedPoster = false
+        contentView.showVideo(contentView.playerLayer.isReadyForDisplay)
+        if options.speed == 1 && !updatedFrame { player?.play() }
+        else { player?.playImmediately(atRate: Float(options.speed)) }
     }
 
     /// 保留 player、item 和显示层；不 seek，不移除内容。
@@ -145,10 +182,102 @@ final class VideoRenderer {
 
     func setMuted(_ muted: Bool) { player?.isMuted = muted }
 
+    /// Edit the existing media pipeline, never replace its player/item or seek its loop timeline.
+    /// Build failures leave all previously applied options and the visible video untouched.
+    func updateOptions(_ value: VideoPlaybackOptions) async throws {
+        let next = try value.validated()
+        guard isPrepared, let asset, let player else { throw VideoRendererError.invalidLifecycle }
+        optionsGeneration = UUID(); let token = optionsGeneration
+        optionsImageGenerator?.cancelAllCGImageGeneration(); optionsImageGenerator = nil
+        try Task.checkCancellation()
+        guard options != next else { return }
+        let rebuild = options.frameRate != next.frameRate || options.dynamicRange != next.dynamicRange
+            || options.brightness != next.brightness || options.contrast != next.contrast
+            || options.saturation != next.saturation || options.effect != next.effect
+            || (next.frameRate != .source && options.speed != next.speed)
+        var composition = processingComposition
+        if rebuild {
+            // Once active, retain a pass-through compositor when clearing effects. Tearing it
+            // down on a paused item can stall the native pipeline; its media timeline stays intact.
+            composition = try await VideoProcessingPipeline.composition(asset: asset, options: next,
+                forcePassthrough: processingComposition != nil)
+        }
+        try checkOptionsUpdate(token)
+        if let composition { try VideoProcessingPipeline.validatePreparationSize(composition.renderSize, options: next) }
+        var poster: (CGImage, CMTime)?
+        if rebuild || options.preloadBudgetMiB != next.preloadBudgetMiB {
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            let edge = min(3840, floor(sqrt(Double(next.preloadBudgetBytes) / 16)))
+            generator.maximumSize = CGSize(width: edge, height: edge)
+            generator.videoComposition = composition
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+            optionsImageGenerator = generator
+            defer { if optionsImageGenerator === generator { optionsImageGenerator = nil } }
+            poster = try await withTaskCancellationHandler {
+                try await generator.image(at: currentTime)
+            } onCancel: { generator.cancelAllCGImageGeneration() }
+            try checkOptionsUpdate(token)
+            if let image = poster?.0, image.bytesPerRow > next.preloadBudgetBytes / max(1, image.height) {
+                throw VideoOptionsError.preparationBudget
+            }
+        }
+        try checkOptionsUpdate(token)
+        let wasPlaying = player.rate != 0
+        let fitChanged = options.displayFit != next.displayFit || options.customFrame != next.customFrame
+        options = next; processingComposition = composition
+        if let (image, time) = poster {
+            contentView.setPoster(image); posterTime = time
+            if !wasPlaying { usesUpdatedPausedPoster = true; contentView.showVideo(false) }
+        }
+        if fitChanged { contentView.setDisplayFit(next.displayFit, frame: next.customFrame) }
+        if rebuild { synchronizeLoopItems() }
+        if player.volume != Float(next.volume) { player.volume = Float(next.volume) }
+        if wasPlaying, player.rate != Float(next.speed) { player.rate = Float(next.speed) }
+    }
+
+    /// 只改「自定义」显示范围：不经过处理管线，立即生效（显示器页预览在拖动时用）。
+    func updateCustomFrame(_ frame: CustomDisplayFrame?) {
+        guard isPrepared, options.customFrame != frame, frame?.isValid ?? true else { return }
+        options.customFrame = frame
+        contentView.setDisplayFit(options.displayFit, frame: frame)
+    }
+
+    /// Saved desktop configuration has its own cancellable latest-wins operation.
+    /// The editor preview instead awaits updateOptions directly and remains independent.
+    func scheduleOptionsUpdate(_ value: VideoPlaybackOptions, onError: @escaping @MainActor (Error) -> Void) {
+        savedOptionsTask?.cancel(); savedOptionsGeneration = UUID(); let token = savedOptionsGeneration
+        savedOptionsTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if self.savedOptionsGeneration == token { self.savedOptionsTask = nil } }
+            do { try await self.updateOptions(value) }
+            catch { if !Task.isCancelled, self.isPrepared, self.savedOptionsGeneration == token { onError(error) } }
+        }
+    }
+
+    private func checkOptionsUpdate(_ token: UUID) throws {
+        try Task.checkCancellation()
+        guard isPrepared, optionsGeneration == token else { throw CancellationError() }
+    }
+
+    private func synchronizeLoopItems() {
+        guard isPrepared else { return }
+        var seen = Set<ObjectIdentifier>()
+        for item in [loopTemplate].compactMap({ $0 }) + (looper?.loopingPlayerItems ?? []) + (player?.items() ?? []) {
+            guard seen.insert(ObjectIdentifier(item)).inserted else { continue }
+            if item.videoComposition !== processingComposition { item.videoComposition = processingComposition }
+            let hdr = options.dynamicRange == .automatic
+            if item.appliesPerFrameHDRDisplayMetadata != hdr { item.appliesPerFrameHDRDisplayMetadata = hdr }
+            if item.audioTimePitchAlgorithm != .spectral { item.audioTimePitchAlgorithm = .spectral }
+        }
+    }
+
     /// 调用方先从窗口移除 contentView，再释放 Renderer。此后不能重用此实例。
     func dispose() {
         guard lifecycle != .disposed else { return }
         lifecycle = .disposed
+        optionsGeneration = UUID(); savedOptionsGeneration = UUID()
+        savedOptionsTask?.cancel(); savedOptionsTask = nil
         onFailure = nil
         releasePlayback()
         contentView.clear()
@@ -166,7 +295,7 @@ final class VideoRenderer {
             contentView.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isPrepared else { return }
-                    self.contentView.showVideo(self.contentView.playerLayer.isReadyForDisplay)
+                    self.contentView.showVideo(self.contentView.playerLayer.isReadyForDisplay && !self.usesUpdatedPausedPoster)
                 }
             },
             player.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
@@ -174,6 +303,9 @@ final class VideoRenderer {
             },
             looper.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor [weak self] in self?.checkPlaybackFailure() }
+            },
+            looper.observe(\.loopingPlayerItems, options: [.new]) { [weak self] _, _ in
+                Task { @MainActor [weak self] in self?.synchronizeLoopItems() }
             },
             player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor [weak self] in self?.observeCurrentItem() }
@@ -186,6 +318,7 @@ final class VideoRenderer {
         if let itemFailureObserver { NotificationCenter.default.removeObserver(itemFailureObserver) }
         itemFailureObserver = nil
         guard isPrepared, let item = player?.currentItem else { return }
+        synchronizeLoopItems()
         itemObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.checkPlaybackFailure() }
         }
@@ -224,6 +357,7 @@ final class VideoRenderer {
         itemFailureObserver = nil
         imageGenerator?.cancelAllCGImageGeneration()
         imageGenerator = nil
+        optionsImageGenerator?.cancelAllCGImageGeneration(); optionsImageGenerator = nil
         asset?.cancelLoading()
         asset = nil
         player?.pause()
@@ -232,11 +366,14 @@ final class VideoRenderer {
         player?.removeAllItems()
         contentView.playerLayer.player = nil
         player = nil
+        processingComposition = nil; loopTemplate = nil
     }
 
     deinit {
         if let itemFailureObserver { NotificationCenter.default.removeObserver(itemFailureObserver) }
         imageGenerator?.cancelAllCGImageGeneration()
+        optionsImageGenerator?.cancelAllCGImageGeneration()
+        savedOptionsTask?.cancel()
         asset?.cancelLoading()
         player?.pause()
         looper?.disableLooping()

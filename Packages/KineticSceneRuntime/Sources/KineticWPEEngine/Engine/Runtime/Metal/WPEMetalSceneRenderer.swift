@@ -110,6 +110,8 @@ final class WPEMetalSceneRenderer: NSObject {
     var textVisibleScriptInstances: [String: WPELayerScriptInstance] = [:]
     var textAlphaScriptInstances: [String: WPELayerScriptInstance] = [:]
     var liveTextAlpha: [String: Double] = [:]
+    var liveTextPointSizes: [String: Double] = [:]
+    var livePropertyScales: [String: SIMD3<Double>] = [:]
     /// Keyed by objectID; a text object's own text script still overrides it each frame.
     var liveScriptAssignedText: [String: String] = [:]
     var mediaEventDispatcher: WPESceneMediaEventDispatcher?

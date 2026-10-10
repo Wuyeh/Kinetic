@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// Module 25: a stable settings map. Future features have no inactive-looking fake controls.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, appearance, playback, web, steam, displays, overlays, weather, music, performance, shortcuts, about
+    case general, appearance, playback, web, steam, weather, music, performance, shortcuts, permissions, about
     var id: String { rawValue }
     var titleKey: String { "settings.\(rawValue)" }
     var symbol: String {
@@ -14,12 +14,11 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .playback: return "play.circle"
         case .web: return "globe"
         case .steam: return "gamecontroller"
-        case .displays: return "display.2"
-        case .overlays: return "square.3.layers.3d"
         case .weather: return "cloud.sun"
         case .music: return "music.note"
         case .performance: return "gauge.with.dots.needle.50percent"
         case .shortcuts: return "keyboard"
+        case .permissions: return "lock.shield"
         case .about: return "info.circle"
         }
     }
@@ -35,7 +34,20 @@ struct KineticSettingsView: View {
                                     loginItems: appDelegate.loginItems, steam: appDelegate.steamService,
                                     store: appDelegate.steamStore, engineAssets: appDelegate.engineAssets,
                                     library: appDelegate.library,
-                                    monitor: appDelegate.smartPauseMonitor)
+                                    monitor: appDelegate.smartPauseMonitor,
+                                    sceneProperties: appDelegate.sceneProperties,
+                                    videoPlayback: appDelegate.videoPlayback,
+                                    webPlayback: appDelegate.webPlayback,
+                                    weatherSettings: appDelegate.weatherSettings,
+                                    audioResponse: appDelegate.audioResponse, music: appDelegate.music,
+                                    shortcuts: appDelegate.globalShortcuts,
+                                    adaptiveFrameRate: appDelegate.adaptiveFrameRate,
+                                    systemWallpaper: appDelegate.systemWallpaper,
+                                    updates: appDelegate.updates,
+                                    permissions: appDelegate.permissions,
+                                    problems: appDelegate.problemLog,
+                                    onBrowseAerials: { appDelegate.showAppleAerials() },
+                                    onEditParticles: { appDelegate.showParticles() })
             } else {
                 ProgressView().frame(width: 800, height: 570)
             }
@@ -54,6 +66,26 @@ struct SettingsContentView: View {
     var engineAssets: EngineAssetsStore? = nil
     let library: WallpaperLibrary?
     let monitor: SmartPauseMonitor?
+    var sceneProperties: ScenePropertyStore? = nil
+    var videoPlayback: VideoPlaybackStore? = nil
+    var webPlayback: WebPlaybackStore? = nil
+    var weatherSettings: WeatherSettingsModel? = nil
+    var audioResponse: AudioResponseService? = nil
+    var music: MusicService? = nil
+    /// Module 49.
+    var shortcuts: GlobalShortcutCenter? = nil
+    /// Module 51.
+    var adaptiveFrameRate: AdaptiveFrameRateController? = nil
+    /// Module 53.
+    var systemWallpaper: SystemWallpaperProvider? = nil
+    /// Module 54.
+    var updates: UpdateController? = nil
+    /// Module 55.
+    var permissions: PermissionCenter? = nil
+    /// Module 57.
+    var problems: ProblemLog? = nil
+    var onBrowseAerials: (() -> Void)? = nil
+    var onEditParticles: (() -> Void)? = nil
     @State private var section: SettingsSection = .general
     @State private var exceptionError: String?
 
@@ -82,7 +114,7 @@ struct SettingsContentView: View {
                 Text(LocalizedStringKey(section.titleKey)).font(.title2.weight(.semibold))
                     .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 18)
                 if section == .steam, let steam, let store {
-                    SteamSettingsView(steam: steam, store: store, engineAssets: engineAssets)
+                    SteamSettingsView(steam: steam, store: store, engineAssets: engineAssets, settings: settings)
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) { page }
@@ -105,6 +137,14 @@ struct SettingsContentView: View {
             Toggle("settings.pauseInLowPowerMode", isOn: setting(\.pauseInLowPowerMode))
             Toggle("settings.pauseOnBattery", isOn: setting(\.pauseOnBatteryPower))
             note("settings.powerPause.detail")
+            if let library {
+                Divider()
+                BackupSettingsSection(storage: library.storage)
+            }
+            if let problems {
+                Divider()
+                RecentProblemsSection(log: problems, displayCount: { runtime.displayIDs.count })
+            }
         case .appearance:
             Picker("settings.appearance.mode", selection: setting(\.appearance)) {
                 Text("settings.appearance.system").tag(AppearanceMode.system)
@@ -116,43 +156,64 @@ struct SettingsContentView: View {
             Toggle("settings.audio", isOn: Binding(get: { runtime.isAudioEnabled }, set: { runtime.setAudioEnabled($0) }))
             Toggle("settings.smartPause", isOn: setting(\.smartPauseEnabled))
             note("settings.smartPause.detail")
+            Toggle("同步为系统壁纸", isOn: setting(\.systemWallpaperSyncEnabled))
+            note("把每台显示器的 macOS 系统壁纸换成 Kinetic 当前壁纸的静止画面，调度中心、切换桌面空间和退出 Kinetic 后看到的与动态壁纸一致；换壁纸或应用参数后更新。关闭时换回原来的系统壁纸。")
+            if let systemWallpaper { SystemWallpaperStatus(provider: systemWallpaper) }
+            if let library, let videoPlayback {
+                Divider()
+                VideoPlaybackSettingsSection(library: library, store: videoPlayback, runtime: runtime)
+            }
+            if let onBrowseAerials {
+                Divider()
+                Button("浏览 Apple 航拍…", action: onBrowseAerials).kineticGlassButton()
+            }
+            Divider()
+            SceneDisplayFitControl(selection: setting(\.sceneDisplayFit)).pickerStyle(.radioGroup)
+            note("settings.scene.displayFit.detail")
+            if let library, let sceneProperties {
+                Divider()
+                ScenePropertiesSection(library: library, store: sceneProperties, runtime: runtime)
+            }
         case .web:
             Toggle("settings.web.network", isOn: setting(\.webNetworkAccessEnabled))
             note("settings.web.security")
+            Toggle("暂停所有网页壁纸的鼠标交互", isOn: setting(\.webMouseInteractionPaused))
+            note("只影响开启了「鼠标移动交互」的网页壁纸，各自的设置保留；也可以用快捷键切换（设置 › 快捷键）。")
             note("settings.web.appliesNext")
+            if let library, let webPlayback {
+                Divider()
+                WebPlaybackSettingsSection(library: library, store: webPlayback, runtime: runtime,
+                                           allowsNetwork: settings.state.webNetworkAccessEnabled)
+            }
         case .steam:
             note("settings.steam.unavailable")
-        case .displays:
-            displaySettings
         case .performance:
             performanceSettings
-        case .overlays, .weather, .music, .shortcuts:
-            note("settings.feature.later")
+        case .weather:
+            if let model = weatherSettings {
+                WeatherSettingsView(model: model, weather: model.weather, store: model.weather.store,
+                                    responses: model.responses, onEditParticles: onEditParticles)
+            } else { note("settings.feature.later") }
+        case .music:
+            if let audioResponse, let music { AudioResponseSettingsView(service: audioResponse, music: music) }
+            else { note("settings.feature.later") }
+        case .shortcuts:
+            if let shortcuts { GlobalShortcutSettingsView(settings: settings, center: shortcuts) }
+            else { note("settings.feature.later") }
+        case .permissions:
+            if let permissions {
+                PermissionCenterView(center: permissions, engineAssets: engineAssets, onOpenSteamSettings: { section = .steam })
+            } else { note("settings.feature.later") }
         case .about:
             Text("app.name").font(.title2.weight(.semibold))
             Text(Self.versionText)
             note("settings.about.tagline")
-        }
-    }
-
-    private var displaySettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if runtime.summary.displays.isEmpty { note("settings.displays.empty") }
-            ForEach(Array(runtime.summary.displays.enumerated()), id: \.element.id) { index, display in
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(display.displayName.isEmpty ? String(format: NSLocalizedString("displayPicker.fallback", comment: ""), index + 1) : display.displayName,
-                          systemImage: "display").font(.headline)
-                    Text(NSLocalizedString("runtime.state.\(display.runtime.playbackState.rawValue)", comment: ""))
-                    if let active = runtime.activeWallpaper(on: display.id) { Text(active.name).lineLimit(2) }
-                    if let size = display.frame?.size {
-                        Text(String(format: NSLocalizedString("settings.displays.size", comment: ""),
-                                    Int(size.width * display.scaleFactor), Int(size.height * display.scaleFactor)))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            if let updates {
                 Divider()
+                UpdateSettingsSection(updates: updates, settings: settings)
             }
-            note("settings.displays.detail")
+            Divider()
+            AcknowledgementsSection()
         }
     }
 
@@ -167,6 +228,10 @@ struct SettingsContentView: View {
             Toggle("settings.performance.occlusion", isOn: setting(\.pauseWhenOccluded))
                 .disabled(!settings.state.smartPauseEnabled)
             note("settings.performance.perDisplay")
+            Divider()
+            Toggle("自适应帧率", isOn: setting(\.adaptiveFrameRateEnabled))
+            note("使用电池、低电量模式或机器温度偏高时，场景壁纸降到 15 帧，网页壁纸的脚本动画限制在 30 帧；条件解除后恢复。视频壁纸不变。「使用电池 / 低电量时暂停」开启时仍然优先暂停。")
+            if let adaptiveFrameRate { AdaptiveFrameRateStatus(controller: adaptiveFrameRate) }
             Divider()
             Text("settings.performance.exceptions").font(.headline)
             note("settings.performance.exceptions.detail")
@@ -257,5 +322,22 @@ private struct PerformanceStatusView: View {
     private static func describe(_ reasons: Set<SmartPauseReason>) -> String {
         SmartPauseReason.allCases.filter { reasons.contains($0) }
             .map { NSLocalizedString("settings.performance.reason.\($0.rawValue)", comment: "") }.joined(separator: "、")
+    }
+}
+
+/// Module 51: whether frame rates are lowered right now, and why.
+private struct AdaptiveFrameRateStatus: View {
+    @ObservedObject var controller: AdaptiveFrameRateController
+    var body: some View {
+        Text(controller.reason.map { "现在已降帧：" + $0.title } ?? "现在以正常帧率播放。")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+}
+
+/// Module 53: a failed sync or restore is shown under the switch.
+private struct SystemWallpaperStatus: View {
+    @ObservedObject var provider: SystemWallpaperProvider
+    var body: some View {
+        if let error = provider.lastError { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
     }
 }

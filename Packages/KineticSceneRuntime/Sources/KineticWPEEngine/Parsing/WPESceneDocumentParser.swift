@@ -235,6 +235,12 @@ public enum WPESceneDocumentParser {
         // Record property→target bindings BEFORE resolving envelopes, since
         // resolution replaces `{"user":K}` with the literal value and loses the key.
         let propertyBindings = extractUserPropertyBindings(in: json)
+        // An authored position slider needs a live consumer even when its script
+        // can be evaluated once. Unbound static scripts retain the original bake path.
+        let boundOriginIDs = Set(propertyBindings.values.flatMap { $0 }.compactMap { binding -> String? in
+            guard case .scriptProperty(let target) = binding.target, target.role == .origin else { return nil }
+            return target.objectID
+        })
         let resolvedJSON = try resolveUserPropertyEnvelopes(in: json, userValues: userValues)
         guard let root = resolvedJSON as? [String: Any] else {
             throw WPESceneDocumentError.rootNotObject
@@ -319,6 +325,7 @@ public enum WPESceneDocumentParser {
                    scriptOrigins: scriptResolvedOrigins,
                    effectiveVisible: effectiveVisible,
                    inheritedAttachment: entryID.flatMap { inheritedAttachments[$0] },
+                   preserveBoundOrigin: entryID.map(boundOriginIDs.contains) ?? false,
                    diagnostics: &diagnostics
             ) {
                 imageObjects.append(object)
@@ -334,7 +341,8 @@ public enum WPESceneDocumentParser {
                let object = parseTransformHostObject(
                 entry,
                 transform: transform,
-                scriptOrigins: scriptResolvedOrigins
+                scriptOrigins: scriptResolvedOrigins,
+                preserveBoundOrigin: entryID.map(boundOriginIDs.contains) ?? false
                ) {
                 transformHostObjects.append(object)
             }
@@ -353,8 +361,10 @@ public enum WPESceneDocumentParser {
                    transform: transform,
                    localOrigin: localTransform(in: entry, scriptOrigins: scriptResolvedOrigins).origin,
                    localScale: localTransform(in: entry, scriptOrigins: scriptResolvedOrigins).scale,
+                   localAngles: localTransform(in: entry, scriptOrigins: scriptResolvedOrigins).angles,
                    parentObjectID: entryID.flatMap { objectParentByID[$0] },
                    effectiveVisible: effectiveVisible,
+                   preserveBoundOrigin: entryID.map(boundOriginIDs.contains) ?? false,
                    diagnostics: &diagnostics
                ) {
                 textObjects.append(object)
@@ -466,7 +476,8 @@ public enum WPESceneDocumentParser {
     private static func parseTransformHostObject(
         _ dict: [String: Any],
         transform: SceneObjectTransform,
-        scriptOrigins: [String: SIMD3<Double>] = [:]
+        scriptOrigins: [String: SIMD3<Double>] = [:],
+        preserveBoundOrigin: Bool = false
     ) -> WPESceneTransformHostObject? {
         guard let id = objectID(in: dict) else { return nil }
         let local = localTransform(in: dict, scriptOrigins: scriptOrigins)
@@ -481,7 +492,7 @@ public enum WPESceneDocumentParser {
             localScale: local.scale,
             localAngles: local.angles,
             originAnimation: WPEValueParser.animatedValue(dict["origin"]),
-            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false),
+            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: preserveBoundOrigin),
             scaleScript: dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true),
             anglesScript: dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true),
             parallaxDepth: parseParallaxDepth(dict["parallaxDepth"] ?? dict["parallaxdepth"])
@@ -688,7 +699,8 @@ public enum WPESceneDocumentParser {
                     target: target,
                     kind: kind,
                     action: action,
-                    condition: spec.condition
+                    condition: spec.condition,
+                    authoredValue: raw.flatMap(WPESceneJSONValue.init(jsonValue:))
                 ))
             }
         }
@@ -743,11 +755,24 @@ public enum WPESceneDocumentParser {
             appendScriptProperties(in: object["scale"], objectID: objectID, role: .scale)
             appendScriptProperties(in: object["angles"], objectID: objectID, role: .angles)
             appendScriptProperties(in: object["color"], objectID: objectID, role: .color)
+            // A direct scale can update the existing local-transform overlay. A script field
+            // still uses its existing scriptProperties consumer, never a second script instance.
+            if (object["scale"] as? [String: Any])?["script"] == nil {
+                let target: WPEScenePropertyBindingTarget?
+                switch objectKind {
+                case .image: target = .imageObject(id: objectID)
+                case .text: target = .textObject(id: objectID)
+                case .unknown: target = .groupObject(id: objectID)
+                default: target = nil
+                }
+                if let target { append(raw: object["scale"], target: target, kind: .scale, action: .incremental,
+                                       includeNestedScriptProperties: false) }
+            }
             switch objectKind {
             case .image:
                 append(raw: object["visible"], target: .imageObject(id: objectID), kind: .visible, action: .incremental, includeNestedScriptProperties: false)
                 append(raw: object["color"], target: .imageObject(id: objectID), kind: .color, action: .reload, includeNestedScriptProperties: false)
-                append(raw: object["alpha"], target: .imageObject(id: objectID), kind: .alpha, action: .reload, includeNestedScriptProperties: false)
+                append(raw: object["alpha"], target: .imageObject(id: objectID), kind: .alpha, action: .incremental, includeNestedScriptProperties: false)
                 append(raw: object["brightness"], target: .imageObject(id: objectID), kind: .brightness, action: .reload)
                 append(raw: object["image"], target: .objectResource(objectID: objectID, field: "image"), kind: .resource, action: .reload)
                 append(raw: object["material"], target: .objectResource(objectID: objectID, field: "material"), kind: .resource, action: .reload)
@@ -796,6 +821,8 @@ public enum WPESceneDocumentParser {
                     }
                 }
             case .text:
+                append(raw: object["pointsize"] ?? object["fontsize"], target: .textObject(id: objectID),
+                       kind: .pointSize, action: .incremental, includeNestedScriptProperties: false)
                 append(raw: object["visible"], target: .textObject(id: objectID), kind: .visible, action: .incremental, includeNestedScriptProperties: false)
                 append(raw: object["color"], target: .textObject(id: objectID), kind: .color, action: .reload, includeNestedScriptProperties: false)
                 append(raw: object["alpha"], target: .textObject(id: objectID), kind: .alpha, action: .reload, includeNestedScriptProperties: false)
@@ -831,7 +858,7 @@ public enum WPESceneDocumentParser {
                     raw: object["visible"],
                     target: .groupObject(id: objectID),
                     kind: .visible,
-                    action: .reload,
+                    action: .incremental,
                     includeNestedScriptProperties: false
                 )
                 appendScriptProperties(in: object["visible"], objectID: objectID, role: .layerVisible)
@@ -1175,8 +1202,10 @@ public enum WPESceneDocumentParser {
         transform: SceneObjectTransform,
         localOrigin: SIMD3<Double>? = nil,
         localScale: SIMD3<Double>? = nil,
+        localAngles: SIMD3<Double>? = nil,
         parentObjectID: String? = nil,
         effectiveVisible: Bool? = nil,
+        preserveBoundOrigin: Bool = false,
         diagnostics: inout [WPESceneDiagnostic]
     ) -> WPESceneTextObject? {
         let raw = dict["text"]
@@ -1295,11 +1324,12 @@ public enum WPESceneDocumentParser {
             parentObjectID: parentObjectID,
             localOrigin: localOrigin,
             localScale: localScale,
+            localAngles: localAngles,
             alphaScript: alphaScript,
             alphaScriptProperties: alphaScriptProperties,
             visibleScript: visibleScript,
             visibleScriptProperties: visibleScriptProperties,
-            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false),
+            originScript: dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: preserveBoundOrigin),
             colorScript: dynamicTransformScript(in: dict["color"], preserveStaticallyResolvable: true),
             scaleScript: dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true),
             anglesScript: dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true)
@@ -1308,6 +1338,33 @@ public enum WPESceneDocumentParser {
 
     /// Replaces `{ "user": K, "value": V }` with `userValues[K] ?? V`, and must run
     /// BEFORE field parsing.
+    static func incrementalFieldValue(
+        _ binding: WPEScenePropertyBinding,
+        values: [String: WallpaperEngineProjectPropertyValue]
+    ) -> Any? {
+        guard let authored = binding.authoredValue else {
+            return values[binding.propertyKey].map(jsonValue(for:))
+        }
+        func foundation(_ value: WPESceneJSONValue) -> Any {
+            switch value {
+            case .object(let value): return value.mapValues(foundation)
+            case .array(let value): return value.map(foundation)
+            case .string(let value): return value
+            case .number(let value): return value
+            case .bool(let value): return value
+            case .null: return NSNull()
+            }
+        }
+        return try? resolveUserPropertyEnvelopes(in: foundation(authored), userValues: values)
+    }
+
+    static func incrementalFieldScale(_ value: Any?) -> SIMD3<Double>? {
+        guard let value else { return nil }
+        if let vector = parseVector3(value), vector.x.isFinite, vector.y.isFinite, vector.z.isFinite { return vector }
+        if let number = parseDouble(value), number.isFinite { return SIMD3(repeating: number) }
+        return nil
+    }
+
     private static func resolveUserPropertyEnvelopes(
         in raw: Any,
         userValues: [String: WallpaperEngineProjectPropertyValue],
@@ -2047,6 +2104,7 @@ public enum WPESceneDocumentParser {
         scriptOrigins: [String: SIMD3<Double>] = [:],
         effectiveVisible: Bool? = nil,
         inheritedAttachment: (name: String, parentID: String)? = nil,
+        preserveBoundOrigin: Bool = false,
         diagnostics: inout [WPESceneDiagnostic]
     ) -> WPESceneImageObject? {
         let isShapeQuad = isShapeQuadLayer(dict)
@@ -2110,7 +2168,7 @@ public enum WPESceneDocumentParser {
         let copyBackground = parseBool(dict["copybackground"]) ?? true
         let dependencies = parseDependencyIDs(dict["dependencies"])
         let animationLayers = parseAnimationLayers(dict["animationlayers"], imageName: name, diagnostics: &diagnostics)
-        let originScript = dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: false)
+        let originScript = dynamicTransformScript(in: dict["origin"], preserveStaticallyResolvable: preserveBoundOrigin)
         let scaleScript = dynamicTransformScript(in: dict["scale"], preserveStaticallyResolvable: true)
         let anglesScript = dynamicTransformScript(in: dict["angles"], preserveStaticallyResolvable: true)
         // Kept even when statically resolvable: there is no parse-time bake path for

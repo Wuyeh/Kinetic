@@ -19,12 +19,30 @@ struct MainShellView: View {
                     OnboardingGate(onboarding: onboarding) {
                         LibraryShellView(library: services.library, runtime: services.runtime, importer: services.importer,
                                          steam: services.steam, store: services.store, steamApply: services.steamApply,
-                                         navigation: appDelegate.mainWindowNavigation)
+                                         navigation: appDelegate.mainWindowNavigation,
+                                         displayEditor: appDelegate.displayWallpaperEditor,
+                                         settings: appDelegate.settingsStore,
+                                         overlayMenu: appDelegate.displayOverlayMenu,
+                                         overlays: appDelegate.displayOverlayEditors,
+                                         organization: appDelegate.localOrganization,
+                                         playlist: appDelegate.playlistPlayer,
+                                         scheduler: appDelegate.scheduler,
+                                         setup: appDelegate.setupStore,
+                                         launchRecovery: appDelegate.launchRecovery)
                     }
                 } else {
                     LibraryShellView(library: services.library, runtime: services.runtime, importer: services.importer,
                                      steam: services.steam, store: services.store, steamApply: services.steamApply,
-                                     navigation: appDelegate.mainWindowNavigation)
+                                     navigation: appDelegate.mainWindowNavigation,
+                                     displayEditor: appDelegate.displayWallpaperEditor,
+                                     settings: appDelegate.settingsStore,
+                                     overlayMenu: appDelegate.displayOverlayMenu,
+                                     overlays: appDelegate.displayOverlayEditors,
+                                     organization: appDelegate.localOrganization,
+                                     playlist: appDelegate.playlistPlayer,
+                                     scheduler: appDelegate.scheduler,
+                                     setup: appDelegate.setupStore,
+                                         launchRecovery: appDelegate.launchRecovery)
                 }
             } else if connectionFailed {
                 Text("shell.error.unavailable")
@@ -161,8 +179,8 @@ enum ShellSection: String, Hashable, CaseIterable {
         case .search: return "magnifyingglass"
         case .favorites: return "heart"
         case .local: return LocalLibraryIcon.symbolName
-        // Steam 使用正式图形资源时再绘制；不以相似 SF Symbol 冒充品牌标志。
-        case .steam: return nil
+        // 用户指定 Workshop 使用设置页同款手柄图标；沿用侧栏原有图标样式。
+        case .steam: return SettingsSection.steam.symbol
         }
     }
 
@@ -318,6 +336,55 @@ struct StableCardSelection<ID: Hashable>: Equatable {
     mutating func clear() { ids.removeAll() }
 }
 
+/// R4 BUG-G1：一次指针手势归谁。按下时由起点决定，并在这次手势结束前保持不变；
+/// 拖动途中经过空白、卡片间隙或覆盖层都不会改判。
+enum ContentPointerOwner: Equatable {
+    /// 卡片（Poster、预览、徽标、标题等）：交给卡片自己的点按 / 长按拖到显示器，父级不能开始框选。
+    case card
+    /// 搜索框、页眉、按钮等交互控件：不开始框选。
+    case control
+    /// 内容区空白：普通点按清除选择，拖动是框选。
+    case blank
+
+    static func resolve(_ point: CGPoint, cardFrames: [CGRect], controlFrames: [CGRect]) -> Self {
+        if cardFrames.contains(where: { $0.contains(point) }) { return .card }
+        if controlFrames.contains(where: { $0.contains(point) }) { return .control }
+        return .blank
+    }
+}
+
+/// 记住当前手势的起点与归属。系统取消手势时 onEnded 不一定执行，所以起点变化即视为新的手势。
+struct ContentPointerGesture: Equatable {
+    /// 小于这个距离的移动视为点按（与原框选阈值相同）。
+    static let clickTolerance: CGFloat = 5
+
+    private(set) var start: CGPoint?
+    private(set) var owner: ContentPointerOwner?
+
+    mutating func owner(startingAt point: CGPoint, resolve: () -> ContentPointerOwner) -> ContentPointerOwner {
+        if start != point || owner == nil {
+            start = point
+            owner = resolve()
+        }
+        return owner ?? .control
+    }
+
+    mutating func end() {
+        start = nil
+        owner = nil
+    }
+
+    /// 只有空白起点、移动超过点按阈值、且没有正在进行的显示器拖动时才框选。
+    static func allowsMarquee(owner: ContentPointerOwner, translation: CGSize, displayDragActive: Bool) -> Bool {
+        owner == .blank && !displayDragActive && hypot(translation.width, translation.height) >= clickTolerance
+    }
+
+    /// 只有空白起点的点按（没有拖动）才清除选择。
+    static func isBlankClick(owner: ContentPointerOwner, translation: CGSize) -> Bool {
+        owner == .blank && hypot(translation.width, translation.height) < clickTolerance
+    }
+}
+
 enum CardMarqueeSelection {
     static func frame(from start: CGPoint, to end: CGPoint) -> CGRect {
         CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
@@ -332,7 +399,7 @@ enum CardMarqueeSelection {
 }
 
 @MainActor
-private struct LibraryShellView: View {
+struct LibraryShellView: View {
     @ObservedObject var library: WallpaperLibrary
     @ObservedObject var runtime: WallpaperRuntimeManager
     @StateObject private var organization: LocalOrganizationStore
@@ -341,15 +408,43 @@ private struct LibraryShellView: View {
     let store: SteamStoreService?
     let steamApply: SteamDisplayApplyCoordinator?
     let navigation: MainWindowNavigation
+    let displayEditor: DisplayWallpaperEditor?
+    let settings: SettingsStore?
+    let overlayMenu: DisplayOverlayMenu?
+    let overlays: DisplayOverlayEditors?
+    /// Module 46：按显示器轮播壁纸列表（显示器页「轮播」栏）。
+    let playlist: WallpaperPlaylistPlayer?
+    /// Module 47：按显示器定时切换（显示器页「定时切换」栏）。
+    let scheduler: WallpaperScheduler?
+    /// Module 48：书签（显示器页壁纸选择浮窗）。
+    let setup: SetupStore?
+    /// Module 57：上次意外退出后暂不恢复的壁纸。
+    var launchRecovery: LaunchRecovery? = nil
     private let pageStore: MainWindowPageStore
 
     @State private var section: ShellSection
     @State private var selection = StableCardSelection<Wallpaper.ID>()
     @State private var cardFrames: [Wallpaper.ID: CGRect] = [:]
+    /// Steam 在线卡片的整张卡片范围（全局坐标），与本地卡片一样属于卡片起点。
+    @State private var steamCardFrames: [String: CGRect] = [:]
+    @State private var pointerGesture = ContentPointerGesture()
+    /// R4 第 10–13 节：Floating Bar 控制的显示器。
+    @State private var displayControl = FloatingBarDisplayControl()
+    /// R4 第 23 节：Steam 在线页面的多选（创意工坊编号）。
+    @State private var steamSelection = StableCardSelection<String>()
+    /// 从 Steam 批量菜单「新建壁纸列表…」进入：列表创建后把这些项目下载并加入新列表。
+    @State private var pendingSteamBatch: [SteamStoreItem]?
+    /// R4 第 44–49 节：Steam 页的九组筛选与展开状态（本次运行内存中；首次进入杂项与风格展开）。
+    @State private var steamFilters = SteamFilterState()
+    @State private var steamSortMode = SteamWorkshopSortMode.recentlyPublished
+    @State private var steamExpandedGroups = Set(SteamTagGroup.allCases.filter(\.isExpandedByDefault))
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isShowingDisplayBubble = false
     @State private var marqueeExcludedFrames: [String: CGRect] = [:]
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
     @State private var selectedListID: UUID?
+    @State private var selectedDisplayID: DisplayID?
     @State private var isCreatingList = false
     @State private var pendingListMembers: [Wallpaper.ID] = []
     @State private var listFrames: [UUID: CGRect] = [:]
@@ -377,15 +472,27 @@ private struct LibraryShellView: View {
 
     init(library: WallpaperLibrary, runtime: WallpaperRuntimeManager, importer: LocalImportService,
          steam: SteamAcquisitionService?, store: SteamStoreService?, steamApply: SteamDisplayApplyCoordinator?,
-         navigation: MainWindowNavigation) {
+         navigation: MainWindowNavigation, displayEditor: DisplayWallpaperEditor? = nil,
+         settings: SettingsStore? = nil, overlayMenu: DisplayOverlayMenu? = nil, overlays: DisplayOverlayEditors? = nil,
+         organization: LocalOrganizationStore? = nil, playlist: WallpaperPlaylistPlayer? = nil,
+         scheduler: WallpaperScheduler? = nil, setup: SetupStore? = nil, launchRecovery: LaunchRecovery? = nil) {
         _library = ObservedObject(wrappedValue: library)
         _runtime = ObservedObject(wrappedValue: runtime)
-        _organization = StateObject(wrappedValue: LocalOrganizationStore(storage: library.storage))
+        // Module 46：轮播在主窗口关闭后也要读列表，所以 App 只保留一份列表数据，两处不会互相覆盖。
+        _organization = StateObject(wrappedValue: organization ?? LocalOrganizationStore(storage: library.storage))
         self.importer = importer
         self.steam = steam
         self.store = store
         self.steamApply = steamApply
         self.navigation = navigation
+        self.displayEditor = displayEditor
+        self.settings = settings
+        self.overlayMenu = overlayMenu
+        self.overlays = overlays
+        self.playlist = playlist
+        self.scheduler = scheduler
+        self.setup = setup
+        self.launchRecovery = launchRecovery
         let pageStore = MainWindowPageStore(library: library.storage)
         self.pageStore = pageStore
         _section = State(initialValue: pageStore.initialPage)
@@ -422,8 +529,11 @@ private struct LibraryShellView: View {
         if let list = selectedList {
             // 列表：「添加时间」是加入这个列表的时间。
             let members = Set(list.wallpaperIDs)
-            return ContentQuery.apply(options, to: library.wallpapers.filter { members.contains($0.id) },
-                                      dateAdded: { list.addedAt($0.id) })
+            // 「列表顺序」（Module 46）按列表自己的顺序，也就是轮播顺序；其他排序不变。
+            let wallpapers = options.sortMode == .listOrder
+                ? list.wallpaperIDs.compactMap { library.wallpaper(id: $0) }
+                : library.wallpapers.filter { members.contains($0.id) }
+            return ContentQuery.apply(options, to: wallpapers, dateAdded: { list.addedAt($0.id) })
         }
         switch section {
         case .local:
@@ -478,8 +588,8 @@ private struct LibraryShellView: View {
         }
         .navigationSplitViewStyle(.balanced)
         // 选择窗口是临时模态交互：背景控件不参与点击、键盘焦点或辅助功能导航。
-        .disabled(displayApply.isPresented)
-        .accessibilityHidden(displayApply.isPresented)
+        .disabled(displayApply.isPresented || isCreatingList)
+        .accessibilityHidden(displayApply.isPresented || isCreatingList)
         .frame(minWidth: Tokens.Window.minimumWidth, minHeight: Tokens.Window.minimumHeight)
         .background {
             MainWindowMinimumSize(width: Tokens.Window.minimumWidth, height: Tokens.Window.minimumHeight)
@@ -487,7 +597,8 @@ private struct LibraryShellView: View {
         }
         .background {
             DeleteKeyHandler(
-                isEnabled: selectedWallpaper != nil && !isConfirmingDeletion && !displayApply.isPresented
+                isEnabled: selectedDisplayID == nil && selectedWallpaper != nil && !isConfirmingDeletion
+                    && !displayApply.isPresented && !isCreatingList
                     && localDrag.wallpaperID == nil && steamDrag.item == nil,
                 windowReference: windowReference
             ) {
@@ -534,7 +645,9 @@ private struct LibraryShellView: View {
             targetFrames = [:]
             refreshDisplayHover()
             if ids.isEmpty { displayApply.cancel(); cancelDisplayDrag() }
+            synchronizeControlledDisplay(ids)
         }
+        .onAppear { synchronizeControlledDisplay(runtime.summary.displays.map(\.displayID)) }
         .onChange(of: library.wallpapers.map(\.id)) { ids in
             if let id = displayApply.wallpaperID, !ids.contains(id) { displayApply.cancel() }
             if let id = localDrag.wallpaperID, !ids.contains(id) { cancelDisplayDrag() }
@@ -544,9 +657,16 @@ private struct LibraryShellView: View {
             showMessage($0.message)
         }
         .onReceive(navigation.requests.compactMap { $0 }) { page in
+            selectedDisplayID = nil
             selectedListID = nil
             section = page
             navigation.consume()
+        }
+        .onReceive(navigation.displayRequests.compactMap { $0 }) { display in
+            selectedListID = nil
+            selectedDisplayID = display
+            cancelDisplayDrag()
+            navigation.consumeDisplay()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             cancelDisplayDrag()
@@ -555,23 +675,39 @@ private struct LibraryShellView: View {
             if let window = notification.object as? NSWindow, window === windowReference.window { cancelDisplayDrag() }
         }
         .onDisappear { cancelDisplayDrag() }
-        .sheet(isPresented: $isCreatingList) {
-            NewWallpaperListSheet { name, description, cover in
+        .overlay {
+            if isCreatingList {
+                ZStack {
+                    Color.black.opacity(0.28)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { cancelCreateList() }
+                    NewWallpaperListModal(onCancel: cancelCreateList) { name, description, cover in
                 do {
-                    _ = try organization.createList(name: name, description: description,
-                                                    coverSourceURL: cover, wallpaperIDs: pendingListMembers)
+                    let listID = try organization.createList(name: name, description: description,
+                                                             coverSourceURL: cover, wallpaperIDs: pendingListMembers)
                     pendingListMembers = []
+                    if let items = pendingSteamBatch {
+                        pendingSteamBatch = nil
+                        runSteamBatch(items, action: .addToList(id: listID, name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    }
+                    isCreatingList = false
                     return true
                 } catch {
                     showMessage(error.localizedDescription)
                     return false
                 }
+                    }
+                }
+                .zIndex(110)
             }
         }
         .onChange(of: section) { page in
             pageStore.save(page)
             cancelDisplayDrag()
             selection.clear()
+            // 第 35 节：切换页面清除该页的多选，避免跨数据域。
+            steamSelection.clear()
             if page != .local { selectedListID = nil }
         }
         // 选择只保留当前页面可见的壁纸（按稳定 ID）：排序不改变选择；类型筛选、搜索关键词、切换列表、
@@ -592,48 +728,79 @@ private struct LibraryShellView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionButton(.search)
-            sectionButton(.favorites)
-
-            Text("shell.sidebar.library")
-                .font(Tokens.Typography.sidebarSection)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
-                .padding(.top, Tokens.Sidebar.sectionTopInset)
-                .padding(.bottom, Tokens.Spacing.small)
-
-            sectionButton(.local)
-            sectionButton(.steam)
-
-            Text("lists.sidebar.title")
-                .font(Tokens.Typography.sidebarSection)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
-                .padding(.top, Tokens.Sidebar.sectionTopInset)
-                .padding(.bottom, Tokens.Spacing.small)
-                .contextMenu {
-                    Button("lists.create.menu") { beginCreateList() }
-                }
-
             ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    sectionButton(.search)
+                    sectionButton(.favorites)
+
+                    Text("shell.sidebar.library")
+                        .font(Tokens.Typography.sidebarSection)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
+                        .padding(.top, Tokens.Sidebar.sectionTopInset)
+                        .padding(.bottom, Tokens.Spacing.small)
+
+                    sectionButton(.local)
+                    sectionButton(.steam)
+
+                    Text("显示器")
+                        .font(Tokens.Typography.sidebarSection)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
+                        .padding(.top, Tokens.Sidebar.sectionTopInset)
+                        .padding(.bottom, Tokens.Spacing.small)
+                    ForEach(Array(runtime.summary.displays.enumerated()), id: \.element.id) { index, display in
+                        displaySidebarRow(display, index: index)
+                    }
+
+                    Text("lists.sidebar.title")
+                        .font(Tokens.Typography.sidebarSection)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
+                        .padding(.top, Tokens.Sidebar.sectionTopInset)
+                        .padding(.bottom, Tokens.Spacing.small)
+
                 LazyVStack(spacing: Tokens.Spacing.micro / 2) {
                     ForEach(organization.lists) { list in
                         listSidebarRow(list)
                     }
                 }
+                }
             }
             .scrollIndicators(.hidden)
 
             Spacer(minLength: Tokens.Spacing.section)
+            SidebarSettingsGear()
+                .padding(.leading, Tokens.Sidebar.horizontalInset + Tokens.Sidebar.itemHorizontalInset)
+                .padding(.bottom, Tokens.Spacing.standard)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, Tokens.Sidebar.topInset)
+        .overlay {
+            WallpaperSecondaryClickSurface { view in
+                let menu = NSMenu()
+                menu.autoenablesItems = false
+                if let native = NSApp.currentEvent?.locationInWindow,
+                   let content = view.window?.contentView,
+                   let point = Optional(CGPoint(x: native.x - content.bounds.minX,
+                        y: content.isFlipped ? native.y - content.bounds.minY : content.bounds.maxY - native.y)),
+                   let list = organization.lists.first(where: { listFrames[$0.id]?.contains(point) == true }) {
+                    let item = WallpaperMenuActionItem(title: localized("lists.delete")) { confirmListDeletion(list) }
+                    item.attributedTitle = NSAttributedString(string: item.title, attributes: [.foregroundColor: NSColor.systemRed])
+                    menu.addItem(item)
+                } else {
+                    menu.addItem(WallpaperMenuActionItem(title: localized("lists.create.menu")) { beginCreateList() })
+                }
+                return menu
+            }
+        }
         // 侧栏背景交给系统：macOS 26 起是悬浮的 Liquid Glass 侧栏。
     }
 
     private func sectionButton(_ item: ShellSection) -> some View {
         Button {
+            selectedDisplayID = nil
             section = item
             selectedListID = nil
             if item == .search { searchFocused = true }
@@ -648,7 +815,7 @@ private struct LibraryShellView: View {
                     Color.clear.frame(width: Tokens.Sidebar.iconSlotWidth, height: Tokens.Sidebar.iconSize)
                 }
                 Text(item.sidebarTitle)
-                    .font(section == item ? Tokens.Typography.sidebarSelectedItem : Tokens.Typography.sidebarItem)
+                    .font(section == item && selectedDisplayID == nil ? Tokens.Typography.sidebarSelectedItem : Tokens.Typography.sidebarItem)
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -658,7 +825,7 @@ private struct LibraryShellView: View {
             .padding(.horizontal, Tokens.Sidebar.itemHorizontalInset)
             .frame(height: Tokens.Sidebar.rowHeight)
             .background {
-                if section == item {
+                if section == item && selectedDisplayID == nil {
                     RoundedRectangle(cornerRadius: Tokens.Radius.medium, style: .continuous)
                         .fill(Color.primary.opacity(0.09))
                 }
@@ -672,6 +839,7 @@ private struct LibraryShellView: View {
 
     private func listSidebarRow(_ list: WallpaperList) -> some View {
         Button {
+            selectedDisplayID = nil
             section = .local
             selectedListID = list.id
             selection.clear()
@@ -702,12 +870,6 @@ private struct LibraryShellView: View {
                                        value: [list.id: proxy.frame(in: .global)])
             }
         }
-        .contextMenu {
-            Button("lists.rename") { renameList(list) }
-            Button("lists.duplicate") { performListAction { try organization.duplicateList(list.id) } }
-            Divider()
-            Button("lists.delete", role: .destructive) { confirmListDeletion(list) }
-        }
     }
 
     @ViewBuilder
@@ -721,10 +883,31 @@ private struct LibraryShellView: View {
                     .foregroundStyle(Tokens.accent)
             }
         }
+        .frame(width: Tokens.Sidebar.iconSlotWidth, height: Tokens.Sidebar.iconSlotWidth)
         .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.small, style: .continuous))
     }
 
     private var mainArea: some View {
+        Group {
+            if let selectedDisplayID, let displayEditor, let settings {
+                ZStack(alignment: .bottom) {
+                    DisplayControlPage(displayID: selectedDisplayID, editor: displayEditor,
+                                       library: library, runtime: runtime, settings: settings,
+                                       overlayMenu: overlayMenu, overlays: overlays,
+                                       playlist: playlist, lists: organization, scheduler: scheduler, setup: setup)
+                        .padding(.horizontal, Tokens.Content.horizontalInset)
+                        .padding(.top, Tokens.Content.topInset)
+                        .padding(.bottom, Tokens.FloatingToolbar.height + Tokens.FloatingToolbar.bottomInset + Tokens.Spacing.standard)
+                    floatingToolbar.padding(.bottom, Tokens.FloatingToolbar.bottomInset)
+                }
+                .id(selectedDisplayID)
+            } else {
+                libraryArea
+            }
+        }
+    }
+
+    private var libraryArea: some View {
         ZStack(alignment: .bottom) {
             GeometryReader { contentGeometry in
                 ScrollView {
@@ -735,7 +918,12 @@ private struct LibraryShellView: View {
                                 .font(Tokens.Typography.pageTitle)
                                 .padding(.bottom, Tokens.Content.titleBottomGap)
                         } else {
-                            ContentHeader(title: selectedList?.name ?? section.title, options: contentOptionsBinding)
+                            ContentHeader(title: selectedList?.name ?? section.title, options: contentOptionsBinding,
+                                          steamFilters: section == .steam ? $steamFilters : nil,
+                                          steamExpandedGroups: section == .steam ? $steamExpandedGroups : nil,
+                                          steamSortMode: $steamSortMode,
+                                          availableHeight: contentGeometry.size.height,
+                                          showsListOrder: selectedList != nil)
                                 .padding(.bottom, Tokens.Content.titleBottomGap)
                                 .background { marqueeExclusionFrame("contentHeader") }
                         }
@@ -759,9 +947,23 @@ private struct LibraryShellView: View {
                                 library: library,
                                 downloads: downloadPresentation,
                                 options: currentContentOptions,
+                                sortMode: $steamSortMode,
+                                filters: steamFilters,
                                 availableWidth: max(0, contentGeometry.size.width - 2 * Tokens.Content.horizontalInset),
+                                viewportHeight: contentGeometry.size.height,
                                 showMessage: { showMessage($0) },
-                                onDisplayDrag: handleSteamDisplayDrag
+                                onDisplayDrag: handleSteamDisplayDrag,
+                                selection: $steamSelection,
+                                onBatchDownload: { runSteamBatch($0, action: .download) },
+                                onContextMenu: { item, _ in steamContextMenu(for: item) },
+                                onRestoreConditions: { query in
+                                    // 停留过的页的筛选与类型；与当前相同时不会再次请求。
+                                    steamFilters = query.filters
+                                    if let key = contentScopeKey {
+                                        let options = contentOptions[key] ?? ContentViewOptions()
+                                        contentOptions[key] = ContentViewOptions(sortMode: options.sortMode, typeFilter: query.typeFilter)
+                                    }
+                                }
                             )
                         } else if visibleWallpapers.isEmpty {
                             emptyState
@@ -807,21 +1009,34 @@ private struct LibraryShellView: View {
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .global)
                         .onChanged { value in
-                            guard isBlankSelectionOrigin(value.startLocation),
-                                  hypot(value.translation.width, value.translation.height) >= 5 else { return }
+                            // R4 BUG-G1：按下时锁定归属；卡片起点（包括等待长按的阶段）永远不框选，
+                            // 显示器拖动进行中也不绘制选择框、不改变选择。
+                            let owner = pointerGesture.owner(startingAt: value.startLocation) { pointerOwner(at: value.startLocation) }
+                            guard ContentPointerGesture.allowsMarquee(owner: owner, translation: value.translation,
+                                                                      displayDragActive: isDisplayDragActive) else {
+                                if isDisplayDragActive { clearMarquee() }
+                                return
+                            }
                             marqueeStart = value.startLocation
                             marqueeCurrent = value.location
-                            selection.replace(with: CardMarqueeSelection.intersectingIDs(
-                                from: value.startLocation, to: value.location, frames: cardFrames
-                            ))
+                            if section == .steam {
+                                steamSelection.replace(with: CardMarqueeSelection.intersectingIDs(
+                                    from: value.startLocation, to: value.location, frames: steamCardFrames
+                                ))
+                            } else {
+                                selection.replace(with: CardMarqueeSelection.intersectingIDs(
+                                    from: value.startLocation, to: value.location, frames: cardFrames
+                                ))
+                            }
                         }
                         .onEnded { value in
-                            if isBlankSelectionOrigin(value.startLocation),
-                               hypot(value.translation.width, value.translation.height) < 5 {
-                                selection.clear()
+                            let owner = pointerGesture.owner(startingAt: value.startLocation) { pointerOwner(at: value.startLocation) }
+                            if ContentPointerGesture.isBlankClick(owner: owner, translation: value.translation),
+                               !isDisplayDragActive {
+                                if section == .steam { steamSelection.clear() } else { selection.clear() }
                             }
-                            marqueeStart = nil
-                            marqueeCurrent = nil
+                            pointerGesture.end()
+                            clearMarquee()
                         }
                 )
                 .overlay {
@@ -839,6 +1054,7 @@ private struct LibraryShellView: View {
                     }
                 }
                 .onPreferenceChange(WallpaperCardFrameKey.self) { cardFrames = $0 }
+                .onPreferenceChange(SteamCardFrameKey.self) { steamCardFrames = $0 }
             }
 
             if let failure = runtime.lastFailure {
@@ -861,6 +1077,10 @@ private struct LibraryShellView: View {
                 )
                 .padding(.horizontal, Tokens.Spacing.standard)
                 .padding(.bottom, Tokens.FloatingToolbar.bottomInset + Tokens.FloatingToolbar.height + Tokens.Spacing.compact)
+            } else if let launchRecovery {
+                LaunchRecoveryNotice(recovery: launchRecovery)
+                    .padding(.horizontal, Tokens.Spacing.standard)
+                    .padding(.bottom, Tokens.FloatingToolbar.bottomInset + Tokens.FloatingToolbar.height + Tokens.Spacing.compact)
             }
 
             VStack(spacing: 0) {
@@ -873,7 +1093,7 @@ private struct LibraryShellView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .coordinateSpace(name: DownloadAnimationMetrics.coordinateSpace)
-        .overlay { SteamDownloadOverlay(presentation: downloadPresentation) }
+        .overlay { SteamDownloadOverlay(presentation: downloadPresentation, steam: steam, posters: store?.posters) }
         .onPreferenceChange(MarqueeExcludedFrameKey.self) { marqueeExcludedFrames = $0 }
         .overlay {
             // 用户要求：状态提示（导入成功 / 失败、正在导入等）放在主内容区最上方居中，
@@ -957,6 +1177,11 @@ private struct LibraryShellView: View {
             .padding(.horizontal, Tokens.FloatingToolbar.horizontalInset)
         }
         .frame(width: Tokens.FloatingToolbar.width, height: Tokens.FloatingToolbar.height)
+        // R4 第 54 节：只提高背景不透明度（× 1.5）：在 clear 玻璃上叠一层系统窗口底色，图标不受影响。
+        .background {
+            Capsule().fill(Color(nsColor: .windowBackgroundColor).opacity(FloatingBarBackground.fillOpacity))
+                .allowsHitTesting(false)
+        }
         // 规格：工具条本身是 Liquid Glass 容器，内部图标没有独立背景。
         // 用户调整：工具条比窗口更通透，使用 clear 变体。
         .kineticGlass(in: Capsule(), clear: true)
@@ -1003,7 +1228,8 @@ private struct LibraryShellView: View {
 
     private var toolbarRightCluster: some View {
         HStack(spacing: Tokens.FloatingToolbar.rightClusterGap) {
-            Button { runtime.stop(.allDisplays) } label: {
+            // R4：停止、声音与播放 / 暂停一样只作用于受控显示器（controlledDisplayID）。
+            Button { if let id = controlledDisplayID { runtime.stop(.display(id)) } } label: {
                 Image(systemName: "xmark")
                     .frame(
                         width: Tokens.FloatingToolbar.stopButtonSize,
@@ -1015,22 +1241,101 @@ private struct LibraryShellView: View {
             .accessibilityLabel(Text(LocalizedStringKey("shell.toolbar.stop")))
 
             Button {
-                runtime.setAudioEnabled(!runtime.isAudioEnabled)
+                if let id = controlledDisplayID { runtime.setAudioEnabled(!controlledAudioEnabled, on: id) }
             } label: {
-                Image(systemName: runtime.isAudioEnabled ? "speaker.wave.2" : "speaker.slash")
+                Image(systemName: controlledAudioEnabled ? "speaker.wave.2" : "speaker.slash")
                     .frame(width: Tokens.Spacing.section, height: Tokens.FloatingToolbar.stopButtonSize)
             }
-            .help(runtime.isAudioEnabled ? "shell.toolbar.mute" : "shell.toolbar.unmute")
-            .accessibilityLabel(Text(LocalizedStringKey(runtime.isAudioEnabled ? "shell.toolbar.mute" : "shell.toolbar.unmute")))
+            .disabled(controlledDisplayID == nil)
+            .help(controlledAudioEnabled ? "shell.toolbar.mute" : "shell.toolbar.unmute")
+            .accessibilityLabel(Text(LocalizedStringKey(controlledAudioEnabled ? "shell.toolbar.mute" : "shell.toolbar.unmute")))
 
+            // R4 第 9、50 节：详情 / Info 在声音之后、显示器图标之前；只看受控显示器真正已生效的壁纸。
+            Button { if let wallpaper = controlledActiveWallpaper { openDetails(.local(wallpaper)) } } label: {
+                Image(systemName: "info.circle")
+                    .frame(width: Tokens.Spacing.section, height: Tokens.FloatingToolbar.stopButtonSize)
+                    .contentShape(Rectangle())
+            }
+            .disabled(controlledActiveWallpaper == nil)
+            .help(controlledActiveWallpaper == nil ? localized("floatingBar.info.empty") : localized("floatingBar.info"))
+            .accessibilityLabel(Text("floatingBar.info"))
+
+            displayControlButton
         }
         .font(.system(size: Tokens.FloatingToolbar.iconSize, weight: .medium))
         .buttonStyle(.plain)
     }
 
-    /// 1.0 Module 23：工具条状态来自全部显示器的汇总（只有一台显示器时与 v0.1 相同）。
+    /// 受控显示器当前真正已生效的壁纸（暂停也算；正在准备的候选与已停止的不算）。
+    private var controlledActiveWallpaper: Wallpaper? {
+        guard let display = controlledDisplay, display.runtime.playbackState != .stopped,
+              let id = display.runtime.activeWallpaperID else { return nil }
+        return library.wallpaper(id: id) ?? runtime.activeWallpaper(on: display.displayID)
+    }
+
+    /// 打开独立详情窗口；不 Apply、不切换显示器、不改变播放 / 音频 / 选择，也不开始下载。
+    private func openDetails(_ subject: WallpaperDetailsSubject) {
+        WallpaperDetailsWindows.shared.show(subject, store: store)
+    }
+
+    /// R4 第 10 节：最右侧的显示器图标：#58BFDA 细线，无背景；点按弹出 Display Bubble。
+    private var displayControlButton: some View {
+        Button { isShowingDisplayBubble.toggle() } label: {
+            Image(systemName: "display")
+                .font(.system(size: Tokens.FloatingToolbar.iconSize, weight: .light))
+                .foregroundStyle(Tokens.accent)
+                .frame(width: Tokens.Spacing.section, height: Tokens.FloatingToolbar.stopButtonSize)
+                .contentShape(Rectangle())
+        }
+        .help(controlledDisplayName.map { String(format: localized("floatingBar.display.current"), $0) } ?? "")
+        .accessibilityLabel(Text("floatingBar.display.button"))
+        .accessibilityValue(Text(verbatim: controlledDisplayName ?? ""))
+        .popover(isPresented: $isShowingDisplayBubble, arrowEdge: .top) {
+            FloatingBarDisplayBubble(
+                hostName: FloatingBarDisplayBubble.computerName ?? localized("floatingBar.display.thisMac"),
+                status: controlledDisplay.map { FloatingBarDisplayRow.statusText($0.runtime.playbackState) } ?? "",
+                rows: displayTargets.map { item in
+                    FloatingBarDisplayRow(item: item,
+                                          state: runtime.summary.state(of: item.id) ?? WallpaperRuntimeState(),
+                                          isControlled: item.id == controlledDisplayID)
+                },
+                onSelect: { id in
+                    // 只改变 Floating Bar 的控制对象：不更换壁纸、不 Crossfade、不修改分配。
+                    displayControl.select(id, displayIDs: runtime.summary.displays.map(\.displayID))
+                    isShowingDisplayBubble = false
+                }
+            )
+            .environment(\.locale, Locale(identifier: "zh-Hans"))
+        }
+    }
+
+    /// R4：Floating Bar 只看受控显示器的会话（只有一台显示器时与原来的汇总相同）。
     private var toolbarState: FloatingToolbarState {
-        FloatingToolbarState(summary: runtime.summary, isInLibrary: { library.wallpaper(id: $0) != nil })
+        FloatingToolbarState(display: controlledDisplay, isInLibrary: { library.wallpaper(id: $0) != nil })
+    }
+
+    private var controlledDisplayID: DisplayID? { controlledDisplay?.displayID }
+
+    private var controlledDisplay: DisplayRuntimeState? {
+        runtime.summary.displays.first { $0.displayID == displayControl.controlledDisplayID }
+    }
+
+    private var controlledDisplayName: String? {
+        displayTargets.first { $0.id == controlledDisplayID }?.name
+    }
+
+    private var controlledAudioEnabled: Bool {
+        controlledDisplayID.map { runtime.isAudioEnabled(on: $0) } ?? runtime.isAudioEnabled
+    }
+
+    /// 受控显示器断开时改为控制主屏并轻量提示；不移动任何壁纸，原显示器重连后不抢回。
+    private func synchronizeControlledDisplay(_ ids: [DisplayID]) {
+        let hadControlled = displayControl.controlledDisplayID != nil
+        guard let fallback = displayControl.synchronize(displayIDs: ids), hadControlled else { return }
+        isShowingDisplayBubble = false
+        if let name = displayTargets.first(where: { $0.id == fallback })?.name {
+            showMessage(String(format: localized("floatingBar.display.switched"), name))
+        }
     }
 
     /// 多台显示器显示不同的壁纸时，中间显示摘要，不假装只有一张「正在播放」。
@@ -1081,7 +1386,8 @@ private struct LibraryShellView: View {
     }
 
     private func togglePlayback() {
-        FloatingToolbarState.perform(toolbarState.playbackAction, on: runtime,
+        guard let display = controlledDisplayID else { return }
+        FloatingToolbarState.perform(toolbarState.playbackAction, on: runtime, display: display,
                                      isInLibrary: { library.wallpaper(id: $0) != nil })
     }
 
@@ -1100,16 +1406,21 @@ private struct LibraryShellView: View {
         return !runtime.summary.displays(involving: id).isEmpty
     }
 
-    private func isBlankSelectionOrigin(_ point: CGPoint) -> Bool {
-        !cardFrames.values.contains { $0.contains(point) } &&
-        !marqueeExcludedFrames.values.contains { $0.contains(point) }
+    private func pointerOwner(at point: CGPoint) -> ContentPointerOwner {
+        // 只使用当前页面的卡片：切换页面后另一页留下的范围不能把空白误判为卡片。
+        let cards = section == .steam ? Array(steamCardFrames.values) : Array(cardFrames.values)
+        return ContentPointerOwner.resolve(point, cardFrames: cards, controlFrames: Array(marqueeExcludedFrames.values))
+    }
+
+    private var isDisplayDragActive: Bool { localDrag.wallpaperID != nil || steamDrag.item != nil }
+
+    private func clearMarquee() {
+        marqueeStart = nil
+        marqueeCurrent = nil
     }
 
     private func marqueeExclusionFrame(_ key: String) -> some View {
-        GeometryReader { proxy in
-            Color.clear.preference(key: MarqueeExcludedFrameKey.self,
-                                   value: [key: proxy.frame(in: .global)])
-        }
+        MarqueeExclusionFrame(key: key)
     }
 
     private func requestApply(_ wallpaper: Wallpaper) {
@@ -1145,6 +1456,8 @@ private struct LibraryShellView: View {
         localDrag.cancel()
         steamDrag.cancel()
         targetFrames = [:]
+        pointerGesture.end()
+        clearMarquee()
     }
 
     private func handleDisplayDrag(_ event: CardDisplayDragEvent, wallpaper: Wallpaper) {
@@ -1192,7 +1505,10 @@ private struct LibraryShellView: View {
             guard steamDrag.item?.id == item.id else { return }
             let destination = steamDrag.takeDrop(from: item.id, at: point, frames: targetFrames, displays: runtime.displayIDs)
             targetFrames = [:]
-            if let (item, display) = destination { steamApply.request(item.acquisitionInfo, to: display) }
+            if let (item, display) = destination {
+                downloadPresentation.register(.init(item: item, posterURL: steamDrag.posterURL ?? store?.posters.cachedURL(for: item)))
+                steamApply.request(item.acquisitionInfo, to: display)
+            }
         case .cancelled:
             guard steamDrag.item?.id == item.id else { return }
             steamDrag.cancel(from: item.id)
@@ -1237,6 +1553,12 @@ private struct LibraryShellView: View {
         let isBatch = wallpapers.count > 1
         let menu = NSMenu()
         menu.autoenablesItems = false
+        // R4 第 1、19、50 节：详情只在明确选择后打开，只看本次被辅助点按的这一张，不改变已保留的选择。
+        // 按 9/25 的规定单选与多选菜单相同，不另设带数量或不同措辞的批量项。
+        menu.addItem(WallpaperMenuActionItem(title: localized("wallpaper.menu.details")) {
+            openDetails(.local(wallpaper))
+        })
+        menu.addItem(.separator())
         let allPinned = wallpapers.allSatisfy { organization.isPinned($0.id) }
         menu.addItem(WallpaperMenuActionItem(title: localized(allPinned ? "wallpaper.menu.unpin" : "wallpaper.menu.pin")) {
             performListAction { try organization.setPinned(!allPinned, for: Set(wallpapers.map(\.id))) }
@@ -1272,6 +1594,12 @@ private struct LibraryShellView: View {
         }
         menu.setSubmenu(listMenu, for: listItem)
         menu.addItem(listItem)
+        // Module 46：只在壁纸列表页面出现；只移出这个列表，壁纸本身不删除。
+        if let list = selectedList {
+            menu.addItem(WallpaperMenuActionItem(title: localized("lists.removeFromList")) {
+                performListAction { try organization.remove(Set(wallpapers.map(\.id)), from: list.id) }
+            })
+        }
 
         menu.addItem(WallpaperMenuActionItem(title: localized("wallpaper.menu.share")) {
             let resources = wallpapers.map(\.resourceURL).filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -1299,6 +1627,89 @@ private struct LibraryShellView: View {
         return menu
     }
 
+    /// R4 第 19、24 节：Steam 卡片的辅助点按菜单。已选卡片且多选 → 动作作用于全部所选；未选卡片 → 只选它。
+    /// 按用户 9/25 的规定，单选与多选是同一个菜单，不显示数量；「查看详情…」只看被点按的这一张。
+    private func steamContextMenu(for item: SteamStoreItem) -> NSMenu {
+        if !steamSelection.contains(item.workshopID) { steamSelection.selectOnly(item.workshopID) }
+        let selected = (store?.items ?? []).filter { steamSelection.contains($0.workshopID) }
+        let items = selected.count > 1 ? selected : [item]
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let plan = SteamCardMenuPlan.entries(
+            allTargetsLocal: items.allSatisfy { library.wallpaper(workshopID: $0.workshopID) != nil })
+        for entry in plan {
+            let title = SteamCardMenuPlan.title(entry)
+            switch entry {
+            case .details:
+                menu.addItem(WallpaperMenuActionItem(title: title) { openDetails(.steam(item)) })
+            case .separator:
+                menu.addItem(.separator())
+            case .download:
+                menu.addItem(WallpaperMenuActionItem(title: title) { runSteamBatch(items, action: .download) })
+            case .inLibrary:
+                let inLibrary = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                inLibrary.isEnabled = false
+                menu.addItem(inLibrary)
+            case .addToList:
+                let listItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                menu.setSubmenu(steamListMenu(for: items), for: listItem)
+                menu.addItem(listItem)
+            case .favorite:
+                menu.addItem(WallpaperMenuActionItem(title: title) { runSteamBatch(items, action: .favorite) })
+            }
+        }
+        return menu
+    }
+
+    /// 「添加到壁纸列表」子菜单：新建壁纸列表…、最近使用、全部列表（与本地菜单相同的结构）。
+    private func steamListMenu(for items: [SteamStoreItem]) -> NSMenu {
+        let listMenu = NSMenu()
+        listMenu.addItem(WallpaperMenuActionItem(title: localized("lists.create.menu")) {
+            pendingSteamBatch = items
+            beginCreateList()
+        })
+        guard !organization.lists.isEmpty else { return listMenu }
+        let recent = organization.lists.sorted {
+            $0.updatedAt == $1.updatedAt ? $0.name < $1.name : $0.updatedAt > $1.updatedAt
+        }.prefix(3)
+        listMenu.addItem(.separator())
+        listMenu.addItem(listSectionHeading("lists.recent"))
+        for list in recent {
+            listMenu.addItem(WallpaperMenuActionItem(title: list.name) {
+                runSteamBatch(items, action: .addToList(id: list.id, name: list.name))
+            })
+        }
+        listMenu.addItem(.separator())
+        listMenu.addItem(listSectionHeading("lists.all"))
+        for list in organization.lists {
+            listMenu.addItem(WallpaperMenuActionItem(title: list.name) {
+                runSteamBatch(items, action: .addToList(id: list.id, name: list.name))
+            })
+        }
+        return listMenu
+    }
+
+    /// 批量（或单项）Steam 动作：在线项目先下载入库，再加入列表 / 喜爱；绝不应用，完成后保留选择并显示真实结果。
+    private func runSteamBatch(_ items: [SteamStoreItem], action: SteamBatchTransaction.Action) {
+        guard let steam, !items.isEmpty else { return }
+        let posters = store?.posters
+        let transaction = SteamBatchTransaction(steam: steam, library: library, organization: organization,
+                                                presentation: downloadPresentation,
+                                                posterURL: { posters?.cachedURL(for: $0) },
+                                                reduceMotion: reduceMotion)
+        Task {
+            let summary = await transaction.run(items, action: action)
+            // 单项下载沿用原来的提示文字。
+            if items.count == 1, action == .download, summary.downloaded == 1, summary.totalFailed == 0 {
+                showMessage(localized("steam.store.added"))
+            } else if items.count == 1, action == .download, summary.alreadyLocal == 1 {
+                showMessage(localized("steam.store.inLibrary"))
+            } else if !summary.message.isEmpty {
+                showMessage(summary.message)
+            }
+        }
+    }
+
     private func listSectionHeading(_ key: String) -> NSMenuItem {
         let item = NSMenuItem(title: localized(key), action: nil, keyEquivalent: "")
         item.attributedTitle = NSAttributedString(
@@ -1320,6 +1731,44 @@ private struct LibraryShellView: View {
     private func beginCreateList(members: [Wallpaper.ID] = []) {
         pendingListMembers = members
         isCreatingList = true
+    }
+
+    private func cancelCreateList() {
+        isCreatingList = false
+        pendingListMembers = []
+        pendingSteamBatch = nil
+    }
+
+    private func displaySidebarRow(_ display: DisplayRuntimeState, index: Int) -> some View {
+        Button {
+            selectedListID = nil
+            selectedDisplayID = display.id
+            cancelDisplayDrag()
+        } label: {
+            HStack(spacing: Tokens.Sidebar.iconTextGap) {
+                Image(systemName: DisplayControlPresentation.symbol(for: display.id))
+                    .font(.system(size: Tokens.Sidebar.iconSize, weight: .regular))
+                    .foregroundStyle(Tokens.accent)
+                    .frame(width: Tokens.Sidebar.iconSlotWidth)
+                Text(DisplayControlPresentation.name(display, index: index))
+                    .font(selectedDisplayID == display.id ? Tokens.Typography.sidebarSelectedItem : Tokens.Typography.sidebarItem)
+                    .foregroundStyle(Color.primary).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Tokens.Sidebar.itemHorizontalInset)
+            .frame(height: Tokens.Sidebar.rowHeight)
+            .background {
+                if selectedDisplayID == display.id {
+                    RoundedRectangle(cornerRadius: Tokens.Radius.medium, style: .continuous)
+                        .fill(Color.primary.opacity(0.09))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, Tokens.Sidebar.horizontalInset)
+        .padding(.vertical, Tokens.Spacing.micro / 2)
+        .accessibilityAddTraits(selectedDisplayID == display.id ? .isSelected : [])
     }
 
     private func performListAction(_ action: () throws -> Void) {
@@ -1348,9 +1797,18 @@ private struct LibraryShellView: View {
         alert.addButton(withTitle: localized("lists.cancel"))
         let delete = alert.addButton(withTitle: localized("lists.delete"))
         delete.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-        performListAction { try organization.deleteList(list.id) }
-        if selectedListID == list.id { selectedListID = nil }
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertSecondButtonReturn else { return }
+            performListAction { try organization.deleteList(list.id) }
+            if selectedListID == list.id && !organization.lists.contains(where: { $0.id == list.id }) {
+                selectedListID = nil
+                selectedDisplayID = nil
+                section = .local
+            }
+        }
+        if let window = windowReference.window, window.isVisible, window.attachedSheet == nil {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else { finish(alert.runModal()) }
     }
 
     private func requestDeleteMany(_ wallpapers: [Wallpaper]) {
@@ -1456,11 +1914,12 @@ private struct LibraryShellView: View {
     }
 }
 
-private struct NewWallpaperListSheet: View {
-    @Environment(\.dismiss) private var dismiss
+struct NewWallpaperListModal: View {
     @State private var name = ""
     @State private var description = ""
     @State private var coverURL: URL?
+    @FocusState private var titleFocused: Bool
+    let onCancel: () -> Void
     let onCreate: (String, String?, URL?) -> Bool
 
     var body: some View {
@@ -1484,25 +1943,33 @@ private struct NewWallpaperListSheet: View {
                         .strokeBorder(Tokens.accent, lineWidth: 1.5)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.container, style: .continuous))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
-            TextField("lists.name", text: $name)
+            .accessibilityLabel("选择壁纸列表海报")
+            TextField("壁纸列表标题", text: $name).focused($titleFocused)
             TextField("lists.description", text: $description)
             HStack {
-                Button("lists.cancel") { dismiss() }
+                Button("lists.cancel", action: onCancel).kineticGlassButton()
                 Spacer()
                 Button("lists.create") {
                     if onCreate(name, description.isEmpty ? nil : description, coverURL) {
-                        dismiss()
+                        onCancel()
                     }
                 }
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .keyboardShortcut(.defaultAction)
+                .displayControlPrimaryButton(isEnabled: !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(Tokens.Spacing.section)
         .frame(width: 360)
+        .kineticGlass(in: RoundedRectangle(cornerRadius: Tokens.Radius.container, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { }
+        .onExitCommand(perform: onCancel)
+        .onAppear { titleFocused = true }
     }
 
     private func chooseCover() {
@@ -1521,10 +1988,22 @@ private struct WallpaperListFrameKey: PreferenceKey {
     }
 }
 
-private struct MarqueeExcludedFrameKey: PreferenceKey {
+/// 内容区中不能开始框选的交互控件（全局坐标）。
+struct MarqueeExcludedFrameKey: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+/// 放在控件的 background 中：报告它的全局范围，起点在这里的拖动不会开始框选。
+struct MarqueeExclusionFrame: View {
+    let key: String
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: MarqueeExcludedFrameKey.self, value: [key: proxy.frame(in: .global)])
+        }
+        .allowsHitTesting(false)
     }
 }
 

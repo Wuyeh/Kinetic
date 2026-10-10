@@ -1,0 +1,62 @@
+{
+  "camera": {
+    "center": "0 0 0"
+  },
+  "general": {
+    "clearcolor": "0 0 0",
+    "orthogonalprojection": {
+      "height": 540,
+      "width": 960
+    }
+  },
+  "objects": [
+    {
+      "id": 1,
+      "image": "models/background.json",
+      "name": "Background",
+      "origin": "480 270 0",
+      "size": "960 540 0",
+      "color": {
+        "user": "tint",
+        "value": "0.62 0.22 0.08"
+      }
+    },
+    {
+      "effects": [
+        {
+          "file": "effects/waterwaves/effect.json",
+          "id": 3,
+          "passes": [
+            {
+              "constantshadervalues": {
+                "direction": 1.5708,
+                "scale": 25,
+                "speed": 3,
+                "strength": 0.25
+              }
+            }
+          ]
+        }
+      ],
+      "id": 2,
+      "image": "models/panel.json",
+      "name": "Scripted waving panel",
+      "origin": {
+        "script": "export function update(value) {\n value.x = 480 + 160 * Math.sin(engine.runtime * engine.userProperties.speed) * engine.userProperties.direction;\n return value;\n}\n",
+        "scriptproperties": {},
+        "value": "480 270 0"
+      },
+      "size": "512 256 0",
+      "visible": {
+        "user": "showpanel",
+        "value": true
+      }
+    },
+    {
+      "id": 4,
+      "name": "Sparks",
+      "origin": "480 270 0",
+      "particle": "particles/sparks.json"
+    }
+  ]
+}

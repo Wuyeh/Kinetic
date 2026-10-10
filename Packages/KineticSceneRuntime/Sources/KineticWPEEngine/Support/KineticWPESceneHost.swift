@@ -59,6 +59,10 @@ public final class KineticWPESceneHost {
     private var adopted = false
     private let gpuErrors: WPEGPUErrorSink
     private let shaderErrors: WPEShaderErrorSink
+    private var descriptor: SceneDescriptor
+    private let propertySchema: WallpaperEngineProjectPropertySchema
+    private let propertyAuthority = ScenePropertyMutationAuthority()
+    private var disposalTask: Task<Void, Never>?
 
     /// - Parameters:
     ///   - sceneFolder: wallpaper folder with `project.json` and the scene entry (loose or in `scene.pkg`).
@@ -67,10 +71,12 @@ public final class KineticWPESceneHost {
     ///   - dependencyFolder: local folder of a Workshop item the scene lists in `dependencies`
     ///     (its `project.json` / `scene.pkg` root); nil when it is not available.
     public init(sceneFolder: URL, engineAssets: URL?, size: CGSize,
-                dependencyFolder: ((String) -> URL?)? = nil) throws {
+                dependencyFolder: ((String) -> URL?)? = nil,
+                propertyValues: [String: WallpaperEngineProjectPropertyValue] = [:]) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw KineticWPESceneHostError.metalUnavailable }
         let project = try WallpaperEngineProject.read(from: sceneFolder)
         guard project.type == .scene else { throw KineticWPESceneHostError.notAScene }
+        let propertySchema = try WallpaperEngineProjectPropertySchema.read(from: sceneFolder)
         let packageURL = sceneFolder.appendingPathComponent("scene.pkg", isDirectory: false)
         let provider: any WPESceneAssetProvider
         let storage: SceneAssetStorage
@@ -97,7 +103,8 @@ public final class KineticWPESceneHost {
             entryFile: project.entryFile,
             capabilityTier: .degraded,
             assetStorage: storage,
-            dependencyWorkshopIDs: mounts.map(\.workshopID)
+            dependencyWorkshopIDs: mounts.map(\.workshopID),
+            propertyOverrides: propertyValues
         )
         let frame = CGRect(origin: .zero, size: CGSize(width: max(1, size.width), height: max(1, size.height)))
         let surface = WPERenderSurface(frame: frame, device: device, targetScreen: nil, allowsHDR: false)
@@ -125,6 +132,8 @@ public final class KineticWPESceneHost {
         self.pendingRenderer = WPERendererHandoff(renderer: renderer)
         self.gpuErrors = renderer.executor.gpuErrorSink
         self.shaderErrors = renderer.executor.shaderErrorSink
+        self.descriptor = descriptor
+        self.propertySchema = propertySchema
         self.view = surface.mtkView
     }
 
@@ -161,7 +170,11 @@ public final class KineticWPESceneHost {
 
     /// Loads the scene, renders and presents the first frame, then leaves it suspended (scene clock at 0)
     /// until `play()`. Returns the first frame as an image for the caller's fallback layer.
-    public func prepare(timeout: TimeInterval, muted: Bool = true) async throws -> CGImage? {
+    /// - Parameter letterboxes: Kinetic's display fit, asked once the authored canvas size is known: true shows the
+    ///   whole canvas (contain), false crops it to fill the view (cover, Wallpaper Engine's default).
+    /// - Parameter crop: Kinetic's 自定义 display region; when set it replaces cover / contain from the first frame.
+    public func prepare(timeout: TimeInterval, muted: Bool = true,
+                        letterboxes: ((CGSize) -> Bool)? = nil, crop: KineticSceneCrop? = nil) async throws -> CGImage? {
         guard !isDisposed, let handoff = pendingRenderer else { throw KineticWPESceneHostError.disposed }
         pendingRenderer = nil
         await renderActor.adopt(handoff.renderer)
@@ -174,6 +187,16 @@ public final class KineticWPESceneHost {
         catch WPERenderPipelineError.includeMissing(let path, _) { throw KineticWPESceneHostError.missingAsset(path) }
         try Task.checkCancellation()
         guard !isDisposed else { throw KineticWPESceneHostError.disposed }
+        let canvas = await renderActor.sceneCanvasSize()
+        canvasSize = canvas
+        if let letterboxes, canvas.width > 1, canvas.height > 1, letterboxes(canvas) {
+            isLetterboxed = true
+            await renderActor.setPresentFitMode(.contain)
+        }
+        if let crop {
+            self.crop = crop
+            await renderActor.setPresentFitMode(.custom(crop))
+        }
         // Required resources (scene entry, models, materials, shaders, a pass's primary texture) fail the load in
         // the engine itself (`SceneRenderingError.resourceFailed(.fileMissing)`). A missing *auxiliary* texture
         // slot stays unbound, as in Wallpaper Engine; nothing is replaced with substitute content.
@@ -213,6 +236,34 @@ public final class KineticWPESceneHost {
         Task { [renderActor] in await renderActor.setAudioMuted(muted) }
     }
 
+    /// Host bridge to the engine's existing transactional patch capability.
+    /// False means that authored binding needs a reload; nothing was changed.
+    public func updatePropertyValues(_ overrides: [String: WallpaperEngineProjectPropertyValue]) async -> Bool {
+        guard isLoaded, !isDisposed else { return false }
+        let token = propertyAuthority.advance()
+        let patch = WPEScenePropertyPatch(bindingsByProperty: await renderActor.scenePropertyBindings(),
+            oldValues: propertySchema.effectiveValues(overrides: descriptor.propertyOverrides),
+            newValues: propertySchema.effectiveValues(overrides: overrides))
+        guard !isDisposed, propertyAuthority.isCurrent(token),
+              let prepared = await renderActor.prepareScenePropertyPatch(patch, authority: propertyAuthority, expectedIntent: token),
+              !isDisposed, propertyAuthority.isCurrent(token) else { return false }
+        let updated = descriptor.withPropertyOverrides(overrides)
+        guard await renderActor.commitScenePropertyPatch(prepared, updatedDescriptor: updated) else { return false }
+        descriptor = updated
+        return true
+    }
+
+    public func setFrameRateCeiling(_ framesPerSecond: Int) async {
+        guard adopted, !isDisposed else { return }
+        await renderActor.setFrameRateCeiling(framesPerSecond)
+    }
+
+    /// Kinetic Module 51: the renderer's existing adaptive throttle (half the rate, not below its floor).
+    public func setAdaptiveFrameRateThrottle(_ active: Bool) async {
+        guard adopted, !isDisposed else { return }
+        await renderActor.setAdaptiveFrameRateThrottle(active)
+    }
+
     /// Renders and presents one frame now (used by tests and by callers whose view is not on screen yet).
     public func renderFrameNow() async {
         guard adopted, !isDisposed else { return }
@@ -220,6 +271,36 @@ public final class KineticWPESceneHost {
     }
 
     /// A steadily growing GPU error count means frames are failing (the caller decides when to give up).
+    /// Kinetic: the scene's authored canvas (orthographic projection) size, known once loaded.
+    public private(set) var canvasSize: CGSize?
+    private var isLetterboxed = false
+    private var crop: KineticSceneCrop?
+    private var presentFitChange: Task<Void, Never>?
+
+    /// Kinetic: show the whole canvas with bars (contain) or crop it to fill the view (cover).
+    public func setLetterboxed(_ letterboxed: Bool) {
+        guard adopted, !isDisposed, letterboxed != isLetterboxed else { return }
+        isLetterboxed = letterboxed
+        pushPresentFit()
+    }
+
+    /// Kinetic: show a user-chosen region of the canvas (显示方式 › 自定义); nil returns to cover / contain.
+    public func setCrop(_ crop: KineticSceneCrop?) {
+        guard adopted, !isDisposed, crop != self.crop else { return }
+        self.crop = crop
+        pushPresentFit()
+    }
+
+    /// Changes reach the render actor in the order they were made (a drag sends many in a row).
+    private func pushPresentFit() {
+        let mode: WPEPresentFitMode = crop.map { .custom($0) } ?? (isLetterboxed ? .contain : .cover)
+        let previous = presentFitChange
+        presentFitChange = Task { [renderActor] in
+            await previous?.value
+            await renderActor.setPresentFitMode(mode)
+        }
+    }
+
     public var health: KineticWPESceneHealth {
         let gpu = gpuErrors.summary
         return KineticWPESceneHealth(gpuErrorCount: gpu.count, lastGPUError: gpu.last,
@@ -245,7 +326,9 @@ public final class KineticWPESceneHost {
     }
 
     public func dispose() async {
+        if let disposalTask { await disposalTask.value; return }
         guard !isDisposed else { return }
+        propertyAuthority.advance()
         isDisposed = true
         isLoaded = false
         surface.detach()
@@ -254,10 +337,13 @@ public final class KineticWPESceneHost {
             pendingRenderer = nil
             pending.renderer.cleanup()
         }
-        if adopted {
-            await renderActor.teardownRenderer()
+        let adopted = adopted
+        let disposal = Task { [renderActor] in
+            if adopted { await renderActor.teardownRenderer() }
+            _ = await renderActor.shutdown()
         }
-        _ = await renderActor.shutdown()
+        disposalTask = disposal
+        await disposal.value
     }
 
     nonisolated static func image(from texture: MTLTexture, colorSpace: CGColorSpace?) -> CGImage? {

@@ -94,7 +94,9 @@ enum WPETextRenderPlanner {
         isLinkedSource: Bool
     ) -> WPETextRenderMode {
         let hasEffect = object.effects.contains { $0.visible || $0.visibleScript != nil }
-        if hasEffect || object.copyBackground || object.opaqueBackground || isLinkedSource {
+        // Kinetic: `copybackground` alone has no reader for the copied seed (the editor saves it on by default),
+        // and the offscreen composite added that seed onto the scene as bright boxes and ignored the layer alpha.
+        if hasEffect || object.opaqueBackground || isLinkedSource {
             return .offscreen
         }
         return .direct

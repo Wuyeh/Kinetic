@@ -113,6 +113,7 @@ struct WPERenderPipelineBuilder: Sendable {
                 staticSourceExtent: staticCompositeSourceExtent
             )
         }
+        pipeline = WPERenderGraphBuilder.keepingSolidBaseColorForEffects(in: pipeline)
         let environment = ProcessInfo.processInfo.environment
         // Both on by default; `WPE_CANONICAL_COMPOSITE_ROTATION=0` /
         // `WPE_FULLFRAME_PASSTHROUGH_ELISION=0` are the kill switches.

@@ -13,6 +13,11 @@ extension WPEMetalSceneRenderer {
     private struct ScenePropertyPatchPlan {
         var layers: [String: Bool]
         var text: [String: Bool]
+        var ownVisibility: [String: Bool] = [:]
+        var alpha: [String: Double] = [:]
+        var pointSizes: [String: Double] = [:]
+        var scales: [String: SIMD3<Double>] = [:]
+        var changedGroups: Set<String> = []
         var soundVisibility: [String: Bool] = [:]
         var soundVolume: [String: Double] = [:]
         var scriptProperties: [
@@ -65,6 +70,8 @@ extension WPEMetalSceneRenderer {
         objectParentByID = [:]
         ownVisibilityByID = [:]
         liveTextVisibility = [:]
+        liveTextPointSizes = [:]
+        livePropertyScales = [:]
         clearSceneScriptRuntimeState()
         sceneScriptBatchDispatcher.releaseLanesForSceneRetirement()
         // Retire only after destroy() has synchronously released JSC callbacks; late queued completions would still run.
@@ -137,7 +144,11 @@ extension WPEMetalSceneRenderer {
         guard renderPipeline != nil || patch.incrementalBindings.isEmpty else { return nil }
         var plan = ScenePropertyPatchPlan(
             layers: liveLayerVisibility,
-            text: liveTextVisibility
+            text: liveTextVisibility,
+            ownVisibility: ownVisibilityByID,
+            alpha: liveLayerAlpha,
+            pointSizes: liveTextPointSizes,
+            scales: livePropertyScales
         )
 
         func resolvedVisible(for binding: WPEScenePropertyBinding) -> Bool? {
@@ -165,9 +176,31 @@ extension WPEMetalSceneRenderer {
             case (.imageObject(let id), .visible):
                 guard let value = resolvedVisible(for: binding) else { return nil }
                 plan.layers[id] = value
+                plan.ownVisibility[id] = value
             case (.textObject(let id), .visible):
                 guard let value = resolvedVisible(for: binding) else { return nil }
                 plan.text[id] = value
+                plan.ownVisibility[id] = value
+            case (.groupObject(let id), .visible):
+                guard let value = resolvedVisible(for: binding), ownVisibilityByID[id] != nil else { return nil }
+                plan.layers[id] = value
+                plan.ownVisibility[id] = value
+                plan.changedGroups.insert(id)
+            case (.imageObject(let id), .alpha):
+                guard let value = WPEValueParser.double(WPESceneDocumentParser.incrementalFieldValue(binding, values: patch.newValues)),
+                      value.isFinite, layerAncestorLocalTransformsByID[id] != nil else { return nil }
+                plan.alpha[id] = min(max(value, 0), 1)
+            case (.textObject(let id), .pointSize):
+                guard let value = WPEValueParser.double(WPESceneDocumentParser.incrementalFieldValue(binding, values: patch.newValues)),
+                      value.isFinite, value > 0, value <= 4096,
+                      textRenderPlans.contains(where: { $0.object.id == id }) else { return nil }
+                plan.pointSizes[id] = value
+            case (.groupObject(let id), .scale), (.imageObject(let id), .scale), (.textObject(let id), .scale):
+                guard let value = WPESceneDocumentParser.incrementalFieldScale(
+                    WPESceneDocumentParser.incrementalFieldValue(binding, values: patch.newValues)),
+                    transformHostLocalTransformsByID[id] != nil || layerAncestorLocalTransformsByID[id] != nil
+                        || textRenderPlans.contains(where: { $0.object.id == id }) else { return nil }
+                plan.scales[id] = value
             case (.soundObject(let id), .visible):
                 guard let value = resolvedVisible(for: binding) else { return nil }
                 plan.soundVisibility[id] = value
@@ -192,6 +225,27 @@ extension WPEMetalSceneRenderer {
                 return nil
             }
         }
+        // Re-fold only visibility claims beneath the changed group. No resource, script,
+        // particle state or scene clock is replaced. Script ticks continue to own their output.
+        if !plan.changedGroups.isEmpty {
+            for id in ownVisibilityByID.keys {
+                var ancestor = objectParentByID[id]
+                var visited: Set<String> = []
+                var affected = false
+                while let current = ancestor, visited.insert(current).inserted {
+                    if plan.changedGroups.contains(current) { affected = true; break }
+                    ancestor = objectParentByID[current]
+                }
+                guard affected else { continue }
+                // Fold independent own claims, never already-folded descendants. This is
+                // independent of dictionary order, including hidden nested groups.
+                let own = plan.ownVisibility[id] ?? true
+                let visible = own && Self.ancestorChainVisible(id, parentByID: objectParentByID,
+                    liveLayerVisibility: [:], liveTextVisibility: [:], ownVisibilityByID: plan.ownVisibility)
+                if textRenderPlans.contains(where: { $0.object.id == id }) { plan.text[id] = visible }
+                else { plan.layers[id] = visible }
+            }
+        }
         // Audio is prepared only after first present; a property mutation while `soundRuntime` is nil must reload or the detached preparation would later publish the old document.
         if (!plan.soundVisibility.isEmpty || !plan.soundVolume.isEmpty), soundRuntime == nil {
             return nil
@@ -200,14 +254,30 @@ extension WPEMetalSceneRenderer {
     }
 
     func applyScenePropertyPatch(_ patch: WPEScenePropertyPatch) -> Bool {
+        if patch.changedKeys.isEmpty { return true }
         guard let plan = scenePropertyPatchPlan(patch) else { return false }
         let scriptFailureBeforePatch = sceneScriptLoadState.currentFailureReason
         let presentationBeforePatch = captureSceneScriptPresentation()
+        let pointSizesBeforePatch = liveTextPointSizes
+        let scalesBeforePatch = livePropertyScales
+        let ownVisibilityBeforePatch = ownVisibilityByID
+        var patchCommitted = false
+        defer {
+            if !patchCommitted {
+                liveTextPointSizes = pointSizesBeforePatch
+                livePropertyScales = scalesBeforePatch
+                ownVisibilityByID = ownVisibilityBeforePatch
+            }
+        }
         let lastFramePipelineBeforePatch = lastFramePipeline
         let frameProductionBeforePatch = latestFrameProduction
         beginSceneScriptVideoCommands()
         liveLayerVisibility = plan.layers
         liveTextVisibility = plan.text
+        ownVisibilityByID = plan.ownVisibility
+        liveLayerAlpha = plan.alpha
+        liveTextPointSizes = plan.pointSizes
+        livePropertyScales = plan.scales
 
         guard applyLiveScriptPropertyUpdates(plan.scriptProperties) else {
             discardSceneScriptVideoCommands()
@@ -218,7 +288,7 @@ extension WPEMetalSceneRenderer {
         if !layerScriptInstances.isEmpty || !layerAlphaScriptInstances.isEmpty
             || !textVisibleScriptInstances.isEmpty || !textAlphaScriptInstances.isEmpty
             || !particleAlphaScriptInstances.isEmpty
-            || hasTransformScriptInstances {
+            || !textScriptInstances.isEmpty || hasTransformScriptInstances {
             let changed = Self.bridgeUserProperties(
                 patch.newValues.filter { patch.changedKeys.contains($0.key) }
             )
@@ -292,6 +362,7 @@ extension WPEMetalSceneRenderer {
             discardSceneScriptVideoCommands()
         }
 
+        executor.invalidateStaticLayerCache()
         if let pipeline = renderPipeline {
             let previousPipeline = pipeline
             renderPipeline = pipeline
@@ -306,6 +377,7 @@ extension WPEMetalSceneRenderer {
                     outputFrameProduction = latestFrameProduction
                     applySoundPropertyUpdates(plan)
                     surfaceControl.drawImmediately()
+                    patchCommitted = true
                     return true
                 } catch {
                     restoreSceneScriptPresentation(presentationBeforePatch)
@@ -318,6 +390,7 @@ extension WPEMetalSceneRenderer {
         }
         applySoundPropertyUpdates(plan)
         surfaceControl.setNeedsRedraw()
+        patchCommitted = true
         return true
     }
 
@@ -798,6 +871,8 @@ extension WPEMetalSceneRenderer {
         objectParentByID = [:]
         ownVisibilityByID = [:]
         liveTextVisibility = [:]
+        liveTextPointSizes = [:]
+        livePropertyScales = [:]
         clearSceneScriptRuntimeState()
         sceneScriptBatchDispatcher.releaseLanesForSceneRetirement()
         sceneScriptLoadState.retireCurrent()

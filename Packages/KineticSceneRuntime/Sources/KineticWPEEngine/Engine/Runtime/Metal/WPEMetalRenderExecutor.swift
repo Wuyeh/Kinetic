@@ -2606,7 +2606,8 @@ final class WPEMetalRenderExecutor {
         let center = anchor + Self.alignmentCenterOffset(
             alignment: geometry.alignment,
             width: width,
-            height: height
+            height: height,
+            scale: geometry.scale
         ) + cameraParallax.pixelOffset(
             objectCenter: parallaxObjectCenter(for: layer, fallback: anchor),
             depth: layer.parallaxDepth,
@@ -2662,7 +2663,7 @@ final class WPEMetalRenderExecutor {
         let width = max(baseWidth * max(abs(scaleX), 0.0001) * projection.depthScale, 0.0001)
         let height = max(baseHeight * max(abs(scaleY), 0.0001) * projection.depthScale, 0.0001)
         let quadCenter = projection.center
-            + Self.alignmentCenterOffset(alignment: geometry.alignment, width: width, height: height)
+            + Self.alignmentCenterOffset(alignment: geometry.alignment, width: width, height: height, scale: geometry.scale)
             + cameraParallax.pixelOffset(
                 objectCenter: parallaxObjectCenter(for: layer, fallback: projection.center),
                 depth: layer.parallaxDepth,
@@ -2774,7 +2775,19 @@ final class WPEMetalRenderExecutor {
         )
     }
 
+    /// The anchor offset lives in the layer's own space, so a mirrored (negative-scale) layer — or one under a mirrored
+    /// parent — extends the other way: a "right" layer whose world scale.x is negative grows to the right of its origin.
     static func alignmentCenterOffset(
+        alignment: WPESceneAlignment,
+        width: Float,
+        height: Float,
+        scale: SIMD3<Double> = SIMD3<Double>(1, 1, 1)
+    ) -> SIMD2<Float> {
+        let offset = unmirroredAlignmentCenterOffset(alignment: alignment, width: width, height: height)
+        return SIMD2<Float>(scale.x < 0 ? -offset.x : offset.x, scale.y < 0 ? -offset.y : offset.y)
+    }
+
+    private static func unmirroredAlignmentCenterOffset(
         alignment: WPESceneAlignment,
         width: Float,
         height: Float
@@ -3468,7 +3481,7 @@ final class WPEMetalRenderExecutor {
     }
 
     /// Those targets already store premultiplied RGB, so a transpiled straight-alpha shader must un-premultiply them before running its original math.
-    private static func premultipliedInputSlots(for pass: WPEPreparedRenderPass) -> Set<Int> {
+    static func premultipliedInputSlots(for pass: WPEPreparedRenderPass) -> Set<Int> {
         var slots = Set<Int>()
         for slot in 0..<WPEShaderTranspiler.customTextureSlotLimit {
             let reference = pass.textureBindings[slot]
@@ -3493,7 +3506,7 @@ final class WPEMetalRenderExecutor {
 
     /// True when the pass targets the premultiplied render-target path, so a
     /// transpiled straight-alpha shader must premultiply its final output.
-    private static func usesPremultipliedOutput(blendMode: String) -> Bool {
+    static func usesPremultipliedOutput(blendMode: String) -> Bool {
         blendMode
             .lowercased()
             .replacingOccurrences(of: "-", with: "")

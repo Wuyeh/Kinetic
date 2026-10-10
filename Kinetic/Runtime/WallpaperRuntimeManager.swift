@@ -60,9 +60,14 @@ final class WallpaperRuntimeManager: ObservableObject {
     @Published private(set) var state = WallpaperRuntimeState()
     /// 全部显示器会话的汇总。
     @Published private(set) var summary = RuntimeSummary()
+    /// Every Apply sent to a display, including one the session suppresses because that wallpaper is
+    /// already showing. Observation only; it never changes the request.
+    let applyRequests = PassthroughSubject<(display: DisplayID, wallpaperID: Wallpaper.ID), Never>()
     @Published private(set) var lastFailure: WallpaperRuntimeFailure?
-    /// 全局壁纸音频开关，作用于全部显示器。
+    /// 全局壁纸音频开关（默认值，设置与菜单栏使用），作用于全部显示器。
     @Published private(set) var isAudioEnabled = false
+    /// R4：Floating Bar 只改当前受控显示器的音频。与默认值不同的显示器记在这里；全局开关会清除它们。
+    @Published private(set) var displayAudioOverrides: [DisplayID: Bool] = [:]
 
     /// 主会话当前实际显示的壁纸模型（只读）。
     var activeWallpaper: Wallpaper? { primarySession?.activeWallpaper }
@@ -76,6 +81,14 @@ final class WallpaperRuntimeManager: ObservableObject {
     private var isSmartPauseConditionActive = false
     private var displaySmartPauseConditions: [DisplayID: Bool] = [:]
     private let makeRenderer: RendererFactory
+    /// UI adapter only: parameter defaults may be scoped to a stable display.
+    /// Session identity, events, readiness and promotion remain owned by the existing pipeline.
+    var displayRendererFactory: (@MainActor (Wallpaper, DisplayID) throws -> WallpaperRenderer)?
+
+    private func renderer(for wallpaper: Wallpaper, on display: DisplayID) throws -> WallpaperRenderer {
+        if let displayRendererFactory { return try displayRendererFactory(wallpaper, display) }
+        return try makeRenderer(wallpaper)
+    }
 
     /// 没有任何显示器会话的 Runtime；由调用方用 `addDisplay` 加入。
     init(makeRenderer: @escaping RendererFactory = { try WallpaperRuntimeManager.standardRenderer(for: $0) }) {
@@ -159,6 +172,7 @@ final class WallpaperRuntimeManager: ObservableObject {
         session.shutdown()
         sessions[display] = nil
         displaySmartPauseConditions[display] = nil
+        displayAudioOverrides[display] = nil
         displayIDs.removeAll { $0 == display }
         if lastFailure?.displayID == display { lastFailure = nil }
         publish()
@@ -183,13 +197,32 @@ final class WallpaperRuntimeManager: ObservableObject {
         let renderer: WallpaperRenderer
         do {
             guard wallpaper.supportState == .supported else { throw WallpaperRuntimeError.unsupportedType }
-            renderer = try makeRenderer(wallpaper)
+            renderer = try self.renderer(for: wallpaper, on: display)
         } catch {
             // 不能创建 Renderer 时不改变任何运行状态，也不取消正在准备的其他壁纸。
             lastFailure = WallpaperRuntimeFailure(wallpaper: wallpaper, error: error, displayID: display)
             return
         }
+        applyRequests.send((display, wallpaper.id))
         session.request(wallpaper, renderer: renderer, event: .apply(wallpaper.id))
+    }
+
+    /// Module 29: refresh saved settings through the same Ready/promotion lifecycle, without changing
+    /// ordinary Apply's duplicate suppression or replacing a pending request for another wallpaper.
+    func reloadActive(_ wallpaper: Wallpaper, on display: DisplayID) {
+        guard let session = sessions[display], session.activeWallpaper?.id == wallpaper.id,
+              session.state.preparingWallpaperID == nil || session.state.preparingWallpaperID == wallpaper.id else { return }
+        do {
+            let renderer = try self.renderer(for: wallpaper, on: display)
+            session.request(wallpaper, renderer: renderer, event: .reloadActive(wallpaper.id))
+        } catch { lastFailure = WallpaperRuntimeFailure(wallpaper: wallpaper, error: error, displayID: display) }
+    }
+
+    /// An optional configuration capability. Renderer-specific options stay in the caller.
+    /// Does not change selection, playback state, pending Apply or the desktop host.
+    func configureActive(_ wallpaper: Wallpaper, on display: DisplayID,
+        configure: (WallpaperRenderer, @escaping @MainActor (Error) -> Void) -> Bool) -> Bool {
+        sessions[display]?.configureActive(wallpaper.id, configure: configure) ?? false
     }
 
     /// v0.1 单显示器入口：只有一个显示器会话时应用到它。
@@ -227,11 +260,24 @@ final class WallpaperRuntimeManager: ObservableObject {
     /// 关闭轻量错误提示，不改变任何壁纸或播放状态。
     func dismissFailure() { lastFailure = nil }
 
-    /// 由全局入口调用；候选渲染器准备完成时也会继承此状态。
+    /// 由全局入口调用（设置、菜单栏）；候选渲染器准备完成时也会继承此状态。作用于全部显示器，清除单台显示器的设置。
     func setAudioEnabled(_ enabled: Bool) {
-        guard isAudioEnabled != enabled else { return }
+        guard isAudioEnabled != enabled || !displayAudioOverrides.isEmpty else { return }
         isAudioEnabled = enabled
+        displayAudioOverrides = [:]
         for display in displayIDs { sessions[display]?.setAudioEnabled(enabled) }
+    }
+
+    /// 一台显示器当前是否播放壁纸声音。
+    func isAudioEnabled(on display: DisplayID) -> Bool {
+        displayAudioOverrides[display] ?? isAudioEnabled
+    }
+
+    /// R4：只改一台显示器的壁纸声音（Floating Bar）；默认值与其他显示器不变。
+    func setAudioEnabled(_ enabled: Bool, on display: DisplayID) {
+        guard let session = sessions[display] else { return }
+        displayAudioOverrides[display] = enabled == isAudioEnabled ? nil : enabled
+        session.setAudioEnabled(enabled)
     }
 
     /// 停止后使用该显示器最后一张 Active Wallpaper 重新启用。
@@ -241,7 +287,7 @@ final class WallpaperRuntimeManager: ObservableObject {
             guard let session = sessions[display], session.state.playbackState == .stopped,
                   let wallpaper = session.lastActiveWallpaper, isInLibrary(wallpaper.id) else { continue }
             let renderer: WallpaperRenderer
-            do { renderer = try makeRenderer(wallpaper) } catch {
+            do { renderer = try self.renderer(for: wallpaper, on: display) } catch {
                 lastFailure = WallpaperRuntimeFailure(wallpaper: wallpaper, error: error, displayID: display)
                 continue
             }

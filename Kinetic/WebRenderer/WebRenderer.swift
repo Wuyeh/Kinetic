@@ -25,6 +25,8 @@ enum WebRendererError: LocalizedError {
 @MainActor
 final class WebContentView: NSView {
     private let posterLayer = CALayer()
+    private let viewport = NSView()
+    private var options = WebPlaybackOptions()
     private(set) var hasPoster = false
     private(set) var webView: WKWebView?
 
@@ -36,14 +38,21 @@ final class WebContentView: NSView {
         layer?.masksToBounds = true
         posterLayer.contentsGravity = .resizeAspectFill
         layer?.addSublayer(posterLayer)
+        viewport.wantsLayer = true
+        addSubview(viewport)
     }
 
     required init?(coder: NSCoder) { nil }
 
+    /// The wallpaper remains click-through. Optional pointer movement is delivered without capturing clicks.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override func layout() {
         super.layout()
         posterLayer.frame = bounds
+        viewport.frame = bounds
         webView?.frame = bounds
+        applyGeometry()
     }
 
     func setPoster(_ image: NSImage) {
@@ -56,16 +65,32 @@ final class WebContentView: NSView {
         web.frame = bounds
         web.autoresizingMask = [.width, .height]
         web.isHidden = true
-        addSubview(web)
+        web.wantsLayer = true
+        viewport.addSubview(web)
         webView = web
+        applyGeometry()
     }
 
-    func showWeb() { webView?.isHidden = false }
-    func showFallback() { webView?.isHidden = true }
+    func showWeb() { webView?.isHidden = false; posterLayer.isHidden = true }
+    func showFallback() { webView?.isHidden = true; posterLayer.isHidden = false }
 
     func detach() {
         webView?.removeFromSuperview()
         webView = nil
+    }
+
+    func setLayoutOptions(_ options: WebPlaybackOptions) { self.options = options; applyGeometry() }
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); applyGeometry() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); applyGeometry() }
+    private func applyGeometry() {
+        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        webView?.pageZoom = options.physicalPixelLayout ? 1 / max(1, backing) : 1
+        var transform = CATransform3DMakeTranslation(options.panX * bounds.width, -options.panY * bounds.height, 0)
+        transform = CATransform3DRotate(transform, options.rotationDegrees * .pi / 180, 0, 0, 1)
+        transform = CATransform3DScale(transform, options.scale, options.scale, 1)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        viewport.layer?.sublayerTransform = transform
+        CATransaction.commit()
     }
 }
 
@@ -75,6 +100,18 @@ final class WebContentView: NSView {
 final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUIDelegate {
     let wallpaper: Wallpaper
     let allowsNetwork: Bool
+    private(set) var options: WebPlaybackOptions
+    static var optionsProvider: (@MainActor (Wallpaper.ID) -> WebPlaybackOptions)?
+    /// Module 49: a global pause for every web wallpaper's mouse interaction; the per-wallpaper option is unchanged.
+    static var isMouseInteractionPaused = false
+    /// Module 51 自适应帧率：网页脚本动画（requestAnimationFrame）的上限；nil 不限制。
+    private(set) static var adaptiveFrameRateLimit: Int?
+    private static let liveRenderers = NSHashTable<WebRenderer>.weakObjects()
+    static func applyAdaptiveFrameRateLimit(_ framesPerSecond: Int?) {
+        guard adaptiveFrameRateLimit != framesPerSecond else { return }
+        adaptiveFrameRateLimit = framesPerSecond
+        for renderer in liveRenderers.allObjects { renderer.applyFrameRateLimit() }
+    }
     let contentView = WebContentView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
     var displayView: NSView { contentView }
     var onFailure: (@MainActor (Error) -> Void)?
@@ -89,15 +126,26 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
     private var watchdog: Task<Void, Never>?
     private var isPlaying = false
     private(set) var isMuted = true
+    var isPrepared: Bool { lifecycle == .ready }
+    var isMouseInteractionActive: Bool { mouseTimer != nil }
+    private var mouseTimer: Timer?
+    private var mouseRequestPending = false
+    private var lastMousePoint: CGPoint?
+    private var optionsTask: Task<Void, Never>?
+    private var optionsGeneration = 0
 
-    init(wallpaper: Wallpaper, allowsNetwork: Bool = true) {
+    init(wallpaper: Wallpaper, allowsNetwork: Bool = true, options: WebPlaybackOptions? = nil) {
         self.wallpaper = wallpaper
         self.allowsNetwork = allowsNetwork
+        self.options = options ?? Self.optionsProvider?(wallpaper.id) ?? .init()
     }
 
     func prepare() async throws {
         guard lifecycle == .idle else { throw WebRendererError.invalidLifecycle }
         lifecycle = .preparing
+        do { options = try options.validated() }
+        catch { lifecycle = .failed; throw error }
+        contentView.setLayoutOptions(options)
         guard wallpaper.type == .web, wallpaper.resourceURL.isFileURL else {
             lifecycle = .failed
             throw WebRendererError.unsupportedWallpaper
@@ -119,10 +167,12 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
 
         let configuration = WebWallpaperPolicy.makeConfiguration(userScripts: [
             WKUserScript(source: Self.networkScript(allowsNetwork: allowsNetwork), injectionTime: .atDocumentStart, forMainFrameOnly: false),
-            WKUserScript(source: Self.controlScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            WKUserScript(source: Self.controlScript, injectionTime: .atDocumentStart, forMainFrameOnly: false),
+            WKUserScript(source: WebAdvancedPolicy.cssScript(options.customCSS), injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         ], allowsAutomaticAudioPlayback: true)
         do {
             try await WebWallpaperPolicy.installNetworkRules(on: configuration, allowsNetwork: allowsNetwork)
+            try await WebAdvancedPolicy.install(on: configuration, options: options)
             try Task.checkCancellation()
             guard lifecycle == .preparing else { throw CancellationError() }
             let web = WKWebView(frame: contentView.bounds, configuration: configuration)
@@ -166,6 +216,7 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
         preparationWindow?.close()
         preparationWindow = nil
         contentView.showWeb()
+        updateMouseTimer()
         webView?.setAllMediaPlaybackSuspended(false) { [weak self, weak webView] in
             guard let self, let webView, self.webView === webView,
                   self.lifecycle == .ready, self.isPlaying else { return }
@@ -176,11 +227,62 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
     func pause() {
         guard lifecycle == .ready else { return }
         isPlaying = false
+        stopMouseTimer()
         setPausedInPage(true)
         webView?.setAllMediaPlaybackSuspended(true, completionHandler: nil)
     }
 
     func resume() { play() }
+
+    /// CSS and geometry stay in the same document; script / tracker policy changes require a prepared replacement.
+    func updateOptions(_ value: WebPlaybackOptions) async throws {
+        let value = try value.validated()
+        guard lifecycle == .ready, let webView else { throw WebRendererError.invalidLifecycle }
+        guard !value.requiresReload(comparedTo: options) else { throw WebOptionsError.requiresReload }
+        optionsGeneration += 1; let generation = optionsGeneration
+        if value.customCSS != options.customCSS {
+            _ = try await webView.evaluateJavaScript(WebAdvancedPolicy.cssScript(value.customCSS))
+        }
+        // Native WebKit evaluation cannot be cancelled once sent. If it has already applied
+        // valid CSS, commit matching geometry/options; a later generation still takes precedence.
+        guard lifecycle == .ready, self.webView === webView, generation == optionsGeneration else { throw CancellationError() }
+        options = value
+        contentView.setLayoutOptions(value)
+        updateMouseTimer()
+    }
+    func scheduleOptionsUpdate(_ value: WebPlaybackOptions, onError: @escaping @MainActor (Error) -> Void) {
+        optionsTask?.cancel()
+        optionsTask = Task { @MainActor [weak self] in
+            do { try await self?.updateOptions(value) }
+            catch { if !Task.isCancelled { onError(error) } }
+        }
+    }
+    deinit { watchdog?.cancel(); optionsTask?.cancel(); mouseTimer?.invalidate() }
+
+    private func updateMouseTimer() {
+        stopMouseTimer()
+        guard isPlaying, lifecycle == .ready, options.mouseInteractionEnabled, options.javaScriptEnabled else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.sendMousePosition() }
+        }
+        mouseTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    private func stopMouseTimer() {
+        mouseTimer?.invalidate(); mouseTimer = nil; lastMousePoint = nil
+    }
+    /// Observe cursor position only. Desktop remains click-through, without event taps or accessibility permission.
+    private func sendMousePosition() {
+        guard !Self.isMouseInteractionPaused, let window = contentView.window, let webView, !mouseRequestPending, isPlaying else { return }
+        let point = contentView.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        guard contentView.bounds.contains(point), point != lastMousePoint else { return }
+        guard let cssPoint = WebAdvancedPolicy.mousePoint(point, size: contentView.bounds.size,
+                                                        options: options, pageZoom: webView.pageZoom) else { return }
+        lastMousePoint = point; mouseRequestPending = true
+        webView.evaluateJavaScript(WebAdvancedPolicy.mouseScript(cssPoint)) { [weak self] _, _ in
+            self?.mouseRequestPending = false
+        }
+    }
 
     func setMuted(_ muted: Bool) {
         isMuted = muted
@@ -190,6 +292,8 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
     func dispose() {
         guard lifecycle != .disposed else { return }
         lifecycle = .disposed
+        optionsGeneration += 1; optionsTask?.cancel(); optionsTask = nil
+        stopMouseTimer()
         watchdog?.cancel()
         watchdog = nil
         preparation?.resume(throwing: CancellationError())
@@ -207,6 +311,10 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
         initialNavigation = nil
     }
 
+    private func applyFrameRateLimit() {
+        runScript("window.__kineticWeb?.setFrameRate(\(Self.adaptiveFrameRateLimit ?? 0));")
+    }
+
     private func setPausedInPage(_ paused: Bool) {
         runScript("window.__kineticWeb?.setPaused(\(paused ? "true" : "false"));")
     }
@@ -221,6 +329,8 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
         watchdog = nil
         lifecycle = .ready
         runScript("window.__kineticWeb?.setPaused(true); window.__kineticWeb?.setMuted(true);")
+        Self.liveRenderers.add(self)
+        if Self.adaptiveFrameRateLimit != nil { applyFrameRateLimit() }
         contentView.showFallback()
         let continuation = preparation
         preparation = nil
@@ -231,6 +341,7 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
         guard lifecycle == .preparing || lifecycle == .ready else { return }
         let wasPreparing = lifecycle == .preparing
         lifecycle = .failed
+        stopMouseTimer()
         watchdog?.cancel()
         watchdog = nil
         webView?.stopLoading()
@@ -364,7 +475,7 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
     static let controlScript = """
     (() => {
       'use strict';
-      let paused = false, muted = true, nextID = 1;
+      let paused = false, muted = true, nextID = 1, frameInterval = 0, lastFrame = -Infinity;
       const raf = window.requestAnimationFrame.bind(window), cancelRAF = window.cancelAnimationFrame.bind(window);
       const pending = new Map();
       window.requestAnimationFrame = callback => {
@@ -375,10 +486,16 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
         return id;
       };
       function schedule(id, entry) {
-        entry.nativeID = raf(time => {
+        entry.nativeID = raf(function tick(time) {
           if (!pending.has(id)) return;
           entry.nativeID = null;
           if (paused) return;
+          // Kinetic adaptive frame rate: callbacks of one frame share its time; later frames wait for the interval.
+          if (frameInterval > 0 && time !== lastFrame && time - lastFrame < frameInterval - 1) {
+            entry.nativeID = raf(tick);
+            return;
+          }
+          lastFrame = time;
           pending.delete(id);
           entry.callback(time);
         });
@@ -493,6 +610,9 @@ final class WebRenderer: NSObject, WallpaperRenderer, WKNavigationDelegate, WKUI
             resumeMedia.clear();
           }
           contexts.forEach(context => paused || muted ? context.suspend() : context.resume());
+        },
+        setFrameRate(value) {
+          frameInterval = value > 0 ? 1000 / value : 0;
         },
         setMuted(value) {
           muted = !!value;

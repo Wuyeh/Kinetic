@@ -2,13 +2,32 @@ import SwiftUI
 
 private typealias Tokens = MainWindowDesignTokens
 
-/// Module 20：第一次启动时的 Welcome。只有一页：名称、标语、三个演示和「设置为壁纸」，
-/// 设置成功后轻量提示并说明菜单栏；不做多页介绍。
+/// Module 20：第一次启动时的 Welcome：名称、标语、三个演示和「设置为壁纸」，设置成功后轻量提示并说明菜单栏。
+/// Module 56：多台显示器时先选显示器；设置好之后「继续」到一页「了解 Kinetic」。
 @MainActor
 struct WelcomeView: View {
     @ObservedObject var onboarding: OnboardingController
 
     var body: some View {
+        Group {
+            switch onboarding.phase {
+            case .demos: demos
+            case .tour: WelcomeTourView(onFinish: onboarding.finish).transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: onboarding.phase)
+        .overlay {
+            if onboarding.demoAwaitingDisplay != nil {
+                GeometryReader { proxy in
+                    DisplayApplyDialog(items: onboarding.displayItems, availableSize: proxy.size,
+                                       onSelect: { id in Task { await onboarding.chooseDisplay(id) } },
+                                       onCancel: onboarding.cancelDisplayChoice)
+                }
+            }
+        }
+    }
+
+    private var demos: some View {
         VStack(spacing: 0) {
             Spacer(minLength: Tokens.Spacing.large)
 
@@ -75,9 +94,9 @@ struct WelcomeView: View {
                     }
                 }
                 Button {
-                    onboarding.finish()
+                    onboarding.continueToTour()
                 } label: {
-                    Text("onboarding.start").frame(minWidth: 96)
+                    Text("onboarding.continue").frame(minWidth: 96)
                 }
                 .kineticGlassButton()
                 .controlSize(.large)
@@ -163,5 +182,70 @@ private struct WelcomeDemoCard: View {
                 .font(Tokens.Typography.emptyDetail)
                 .foregroundStyle(Tokens.accent)
         }
+    }
+}
+
+/// Module 56：设置好壁纸之后的一页说明——本地与 Steam 的区别、按显示器设置、菜单栏，以及权限按需询问。
+@MainActor
+struct WelcomeTourView: View {
+    let onFinish: () -> Void
+
+    private struct Item: Identifiable {
+        let id: String
+        let symbol: String
+        let title: LocalizedStringKey
+        let detail: LocalizedStringKey
+    }
+
+    private let items = [
+        Item(id: "library", symbol: "square.stack", title: "onboarding.tour.library.title", detail: "onboarding.tour.library.detail"),
+        Item(id: "displays", symbol: "display.2", title: "onboarding.tour.displays.title", detail: "onboarding.tour.displays.detail"),
+        Item(id: "menuBar", symbol: "menubar.rectangle", title: "onboarding.tour.menuBar.title", detail: "onboarding.tour.menuBar.detail"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: Tokens.Spacing.large)
+            Text("onboarding.tour.title")
+                .font(.system(size: 30, weight: .bold))
+            HStack(alignment: .top, spacing: Tokens.Grid.horizontalGap) {
+                ForEach(items) { item in
+                    VStack(alignment: .leading, spacing: Tokens.Spacing.small) {
+                        Image(systemName: item.symbol)
+                            .font(.system(size: 26, weight: .regular))
+                            .foregroundStyle(Tokens.accent)
+                            .frame(height: 32)
+                            .accessibilityHidden(true)
+                        Text(item.title).font(.system(size: 15, weight: .semibold))
+                        Text(item.detail)
+                            .font(Tokens.Typography.emptyDetail)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(Tokens.Spacing.standard)
+                    .frame(maxWidth: Tokens.Grid.maximumCardWidth, minHeight: 190, alignment: .topLeading)
+                    .kineticGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: 3 * Tokens.Grid.maximumCardWidth + 2 * Tokens.Grid.horizontalGap)
+            .padding(.top, 36)
+            Label("onboarding.tour.permissions", systemImage: "lock.shield")
+                .font(Tokens.Typography.emptyDetail)
+                .foregroundStyle(.secondary)
+                .padding(.top, Tokens.Spacing.section)
+            Button(action: onFinish) {
+                Text("onboarding.start").frame(minWidth: 96)
+            }
+            .kineticGlassButton()
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .padding(.top, Tokens.Spacing.section)
+            Spacer(minLength: Tokens.Spacing.large)
+        }
+        .padding(.horizontal, 40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: Tokens.Window.minimumWidth, minHeight: Tokens.Window.minimumHeight)
+        .tint(Tokens.accent)
     }
 }

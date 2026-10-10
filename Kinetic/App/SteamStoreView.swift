@@ -16,13 +16,27 @@ struct SteamStoreBrowserView: View {
     @ObservedObject var library: WallpaperLibrary
     @ObservedObject var downloads: SteamDownloadPresentation
     let options: ContentViewOptions
+    @Binding var sortMode: SteamWorkshopSortMode
+    /// R4：九组创意工坊筛选；列表、加载更多、搜索与刷新都使用同一完整条件。
+    var filters = SteamFilterState()
     let availableWidth: CGFloat
+    /// 主内容滚动区域的可见高度（R4 BUG-S1：底部触发点必须真正进入可见区域才请求下一页）。
+    var viewportHeight: CGFloat = 0
     let showMessage: (String) -> Void
     var onDisplayDrag: ((SteamStoreItem, URL?, CardDisplayDragEvent) -> Void)? = nil
+    /// R4 第 23 节：Steam 页面的多选（稳定的创意工坊编号）。由主窗口持有，与空白框选共用。
+    @Binding var selection: StableCardSelection<String>
+    /// R4 第 28 节：双击当前多选中的任意一张 = 批量下载全部已选项目。
+    var onBatchDownload: (([SteamStoreItem]) -> Void)? = nil
+    /// R4 第 24 节：辅助点按菜单（单项 / 批量），由主窗口提供（需要壁纸列表）。
+    var onContextMenu: ((SteamStoreItem, NSView) -> NSMenu)? = nil
+    /// 两指滑动回到停留过的页时，主窗口把筛选 / 类型换成那一页的条件。
+    var onRestoreConditions: ((SteamStoreQuery) -> Void)? = nil
 
     @State private var searchText = ""
-    @State private var selectedID: String?
     @State private var posterFrames: [String: CGRect] = [:]
+    @State private var historyNavigations = 0
+    @StateObject private var swipe = WorkshopSwipeNavigator()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let apiKeyPage = URL(string: "https://steamcommunity.com/dev/apikey")!
@@ -33,13 +47,51 @@ struct SteamStoreBrowserView: View {
                 TextField("steam.store.search.placeholder", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: Tokens.Grid.maximumCardWidth * 2)
-                    .onSubmit { store.update(searchText: searchText) }
+                    .onSubmit {
+                        store.update(searchText: searchText)
+                        sortMode = store.query.effectiveSortMode
+                    }
+                    .background { MarqueeExclusionFrame(key: "steamSearch") }
                     .padding(.bottom, Tokens.Spacing.section)
             }
             content
+            if store.hasAPIKey {
+                WorkshopPagination(page: store.query.numberedPage ?? 1, pageSize: store.query.resultsPerPage,
+                    goToPage: store.goToPage, changePageSize: store.setResultsPerPage)
+                    .padding(.top, Tokens.Spacing.section)
+                    .background { MarqueeExclusionFrame(key: "workshopPagination") }
+            }
         }
-        .onAppear { store.update(searchText: searchText, typeFilter: options.typeFilter) }
+        // 两指滑动：当前页跟着手指平移，滑出后换成停留过的页。
+        .offset(x: swipe.offset)
+        .opacity(swipe.isCovered ? 0 : 1)
+        .background { WorkshopSwipeArea(navigator: swipe) }
+        .onChange(of: swipe.request) { request in
+            guard let request else { return }
+            switch request.direction {
+            case .back: store.goBack()
+            case .forward: store.goForward()
+            }
+            searchText = store.query.searchText
+            onRestoreConditions?(store.query)
+            historyNavigations += 1
+            swipe.didNavigate()
+        }
+        .background { WorkshopScrollReset(token: "\(store.query.numberedPage ?? 1):\(store.query.resultsPerPage):\(historyNavigations)") }
+        .onAppear {
+            swipe.canGo = { [store] in $0 == .back ? store.canGoBack : store.canGoForward }
+            swipe.reduceMotion = reduceMotion
+            searchText = store.query.searchText
+            store.update(searchText: searchText, typeFilter: options.typeFilter, filters: filters, sortMode: sortMode, numberedPages: true)
+        }
+        // Module 59：离开 Steam 页面后卡片不在屏幕上，完成动画不再从旧位置起飞。
+        .onDisappear { downloads.updateFrames([:]) }
+        .onChange(of: reduceMotion) { swipe.reduceMotion = $0 }
         .onChange(of: options.typeFilter) { store.update(typeFilter: $0) }
+        .onChange(of: sortMode) { store.update(sortMode: $0) }
+        .onChange(of: store.query.effectiveSortMode) { sortMode = $0 }
+        // 改变筛选：复用原有的重新查询与分页重置；旧请求的结果不会覆盖新条件。
+        .onChange(of: filters) { store.update(filters: $0) }
         .onChange(of: searchText) { text in
             // 清空搜索框时回到最新发布的壁纸；输入时按回车再搜索，避免每个字都请求一次。
             if text.trimmingCharacters(in: .whitespaces).isEmpty, !store.query.trimmedSearch.isEmpty {
@@ -50,6 +102,8 @@ struct SteamStoreBrowserView: View {
             posterFrames = $0
             downloads.updateFrames($0)
         }
+        // 第 36 节：刷新 / 搜索 / 筛选后，选择只保留仍在结果中的编号（不按位置）。
+        .onChange(of: store.displayedItems(options: options).map(\.workshopID)) { ids in selection.retain(Set(ids)) }
     }
 
     @ViewBuilder
@@ -96,23 +150,33 @@ struct SteamStoreBrowserView: View {
                     SteamStoreCard(
                         item: item,
                         state: state(of: item),
-                        isSelected: selectedID == item.workshopID,
+                        isSelected: selection.contains(item.workshopID),
                         posters: store.posters,
-                        onSelect: { selectedID = item.workshopID },
-                        onDownload: { url in download(item, posterURL: url) },
-                        onDisplayDrag: { url, event in onDisplayDrag?(item, url, event) }
+                        onSelect: {
+                            // 第 15 节：Command + 点按切换，不清除其他；普通点按只选当前。
+                            if NSEvent.modifierFlags.contains(.command) { selection.toggle(item.workshopID) }
+                            else { selection.selectOnly(item.workshopID) }
+                        },
+                        onDownload: { url in doubleClicked(item, posterURL: url, among: items) },
+                        onDisplayDrag: { url, event in onDisplayDrag?(item, url, event) },
+                        onContextMenu: onContextMenu.map { provider in { view in provider(item, view) } }
                     )
                 }
             }
-            if store.canLoadMore {
-                // 滚动到底部时自动加载下一页。
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Tokens.Spacing.section)
-                    .onAppear { store.loadMore() }
-            }
+
         }
+    }
+
+    /// 第 28 节：多选中的某一张被双击 → 批量下载当前全部已选项目（不应用、不打开显示器选择）；
+    /// 双击未选中的卡片 → 原有单张双击逻辑，不会把旧选择偷偷批量下载。
+    private func doubleClicked(_ item: SteamStoreItem, posterURL: URL?, among items: [SteamStoreItem]) {
+        if SteamCardMenuPlan.doubleClickDownloadsSelection(selectionCount: selection.count,
+                                                          clickedIsSelected: selection.contains(item.workshopID)),
+           let onBatchDownload {
+            onBatchDownload(items.filter { selection.contains($0.workshopID) })
+            return
+        }
+        download(item, posterURL: posterURL)
     }
 
     private func state(of item: SteamStoreItem) -> SteamStoreCardState {
@@ -122,7 +186,7 @@ struct SteamStoreBrowserView: View {
 
     /// 双击：加入本地资料库（或更新）；已在资料库只提示。绝不应用。
     private func download(_ item: SteamStoreItem, posterURL: URL?) {
-        selectedID = item.workshopID
+        selection.selectOnly(item.workshopID)
         let current = state(of: item)
         let isUpdate: Bool
         switch current {
@@ -140,6 +204,7 @@ struct SteamStoreBrowserView: View {
         let image = SteamDownloadPresentation.snapshot(posterURL: posterURL, type: item.type ?? .web,
                                                       side: max(135, frame.width))
         guard downloads.begin(.init(id: item.workshopID, image: image, frame: frame), reduceMotion: reduceMotion) else { return }
+        downloads.register(.init(item: item, posterURL: posterURL))
         Task {
             switch await steam.acquire(item.acquisitionInfo, allowUpdate: isUpdate) {
             case .success:
@@ -171,12 +236,72 @@ struct SteamStoreBrowserView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             HStack(spacing: Tokens.Spacing.compact) { actions() }
+                .background { MarqueeExclusionFrame(key: "steamNoticeActions") }
                 .padding(.top, Tokens.Spacing.small)
         }
         .frame(maxWidth: .infinity, minHeight: Tokens.Grid.maximumCardWidth, alignment: .center)
         .padding(Tokens.Spacing.section)
     }
 
+}
+
+/// Steam 卡片的全局范围（按创意工坊编号），供内容区判断手势起点与框选。
+struct SteamCardFrameKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+/// R4 BUG-S1：什么时候请求下一页。触发点进入可见区域（含预取距离）、且状态为 idle 才请求；
+/// 正在请求、失败（等待用户重试）或已到末尾都不请求。
+enum SteamLoadMoreTrigger {
+    /// 距离可见区域底部还有这么多点时就开始请求，滚动时不必等到真正碰底。
+    static let prefetchDistance: CGFloat = 320
+
+    static func shouldRequest(footerMinY: CGFloat?, viewportHeight: CGFloat,
+                              state: SteamStoreService.LoadMoreState) -> Bool {
+        guard state == .idle, let footerMinY, viewportHeight > 0 else { return false }
+        return footerMinY <= viewportHeight + prefetchDistance
+    }
+}
+
+struct SteamLoadMoreFooterKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+/// 网格下方：真实请求进行时显示系统加载指示；失败时显示原因与「重试」；其余时候只占位。
+struct SteamLoadMoreFooter: View {
+    let state: SteamStoreService.LoadMoreState
+    let retry: () -> Void
+
+    var body: some View {
+        Group {
+            switch state {
+            case .loading:
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(Text("steam.store.loadMore.loading"))
+            case .failed(let reason):
+                HStack(spacing: Tokens.Spacing.compact) {
+                    Text(String(format: NSLocalizedString("steam.store.loadMore.failed", comment: ""), reason))
+                        .font(Tokens.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Button("steam.store.retry", action: retry)
+                        .kineticGlassButton()
+                        .controlSize(.small)
+                }
+            case .idle, .exhausted:
+                Color.clear.frame(height: 1)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 28)
+        .padding(.vertical, Tokens.Spacing.section)
+    }
 }
 
 /// 打开设置窗口（SwiftUI Settings 场景）。macOS 14 起只能用 `SettingsLink`，与菜单栏的「设置…」相同。
@@ -205,6 +330,8 @@ struct SteamStoreCard: View {
     let onSelect: () -> Void
     let onDownload: (URL?) -> Void
     var onDisplayDrag: ((URL?, CardDisplayDragEvent) -> Void)? = nil
+    /// R4：辅助点按菜单（与本地卡片同一种 Cursor-Anchored 系统菜单）。
+    var onContextMenu: ((NSView) -> NSMenu)? = nil
 
     @State private var posterURL: URL?
     @State private var isDragging = false
@@ -251,7 +378,14 @@ struct SteamStoreCard: View {
             .onTapGesture(perform: select)
         }
         .contentShape(Rectangle())
+        .overlay { if let onContextMenu { WallpaperSecondaryClickSurface(menuProvider: onContextMenu) } }
         .background { WindowDragCoordinateProbe(reference: dragCoordinates) }
+        .background {
+            // R4 BUG-G1：整张卡片（Poster、徽标、标题）都是卡片起点，父级不能从这里开始框选。
+            GeometryReader { proxy in
+                Color.clear.preference(key: SteamCardFrameKey.self, value: [item.workshopID: proxy.frame(in: .global)])
+            }
+        }
         .simultaneousGesture(
             LongPressGesture(minimumDuration: Tokens.LocalDrag.holdDuration)
                 .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
@@ -282,7 +416,8 @@ struct SteamStoreCard: View {
         }
         .animation(.easeOut(duration: 0.15), value: isSelected)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text(item.title))
+        .accessibilityLabel(Text(isSelected ? String(format: NSLocalizedString("steam.card.selected", comment: ""), item.title) : item.title))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .help(failureReason ?? "")
         .accessibilityHint(Text(failureReason ?? ""))
         // 卡片出现时读取或下载 Poster；离开屏幕时 SwiftUI 取消这个任务（规格 27：离屏取消网络工作）。
@@ -343,4 +478,73 @@ struct SteamStoreCardBadge: View {
             .kineticGlass(in: Capsule())
             .padding(Tokens.Spacing.small)
     }
+}
+
+
+/// First/last plus the current page's two neighbours in either direction.
+enum WorkshopPageEntry: Equatable, Identifiable {
+    case page(Int), gap(after: Int)
+    var id: String {
+        switch self { case .page(let value): return "page-\(value)"; case .gap(let value): return "gap-\(value)" }
+    }
+    static func entries(current: Int) -> [Self] {
+        let current = min(SteamStoreQuery.maximumPage, max(1, current))
+        let pages = Set([1, SteamStoreQuery.maximumPage] + Array(max(1, current - 2)...min(SteamStoreQuery.maximumPage, current + 2))).sorted()
+        var result: [Self] = []
+        for page in pages {
+            if case .page(let previous)? = result.last, page - previous > 1 { result.append(.gap(after: previous)) }
+            result.append(.page(page))
+        }
+        return result
+    }
+}
+
+struct WorkshopPagination: View {
+    let page: Int
+    let pageSize: Int
+    let goToPage: (Int) -> Void
+    let changePageSize: (Int) -> Void
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("每页：").foregroundStyle(.secondary)
+            Picker("每页数量", selection: Binding(get: { pageSize }, set: changePageSize)) {
+                ForEach(SteamStoreQuery.pageSizeChoices, id: \.self) { Text(String($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+            Button { goToPage(page - 1) } label: { Image(systemName: "arrow.left").frame(width: 18) }
+                .kineticGlassButton().disabled(page <= 1).help("上一页").accessibilityLabel("上一页")
+            ForEach(WorkshopPageEntry.entries(current: page)) { entry in
+                switch entry {
+                case .gap: Text("…").foregroundStyle(.secondary)
+                case .page(let number):
+                    Button { goToPage(number) } label: {
+                        Text(String(number)).monospacedDigit().padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(number == page ? Color.primary.opacity(0.20) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(number == page)
+                    .accessibilityLabel("第\(number)页").accessibilityAddTraits(number == page ? .isSelected : [])
+                }
+            }
+            Button { goToPage(page + 1) } label: { Image(systemName: "arrow.right").frame(width: 18) }
+                .kineticGlassButton().disabled(page >= SteamStoreQuery.maximumPage).help("下一页").accessibilityLabel("下一页")
+        }.controlSize(.small).fixedSize(horizontal: true, vertical: false)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+/// Scoped to Workshop navigation; the other library pages' scroll behaviour is unchanged.
+private struct WorkshopScrollReset: NSViewRepresentable {
+    let token: String
+    func makeNSView(context: Context) -> ResetView { ResetView() }
+    func updateNSView(_ view: ResetView, context: Context) {
+        defer { view.token = token }
+        guard let old = view.token, old != token else { return }
+        DispatchQueue.main.async { [weak view] in
+            guard let scroll = view?.enclosingScrollView, let document = scroll.documentView else { return }
+            let y = document.isFlipped ? document.bounds.minY : max(document.bounds.minY, document.bounds.maxY - scroll.contentView.bounds.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+    final class ResetView: NSView { var token: String? }
 }

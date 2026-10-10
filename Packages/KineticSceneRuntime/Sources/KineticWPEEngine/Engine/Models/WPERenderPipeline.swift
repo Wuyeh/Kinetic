@@ -583,7 +583,8 @@ extension WPEPreparedRenderPipeline {
         scales: [String: SIMD3<Double>],
         angles: [String: SIMD3<Double>],
         parentByID: [String: String] = [:],
-        hostTransforms: [String: WPERenderObjectTransform] = [:]
+        hostTransforms: [String: WPERenderObjectTransform] = [:],
+        parentOriginShifts: [String: SIMD3<Double>] = [:]
     ) -> WPEPreparedRenderPipeline {
         guard !origins.isEmpty || !scales.isEmpty || !angles.isEmpty else { return self }
         guard !parentByID.isEmpty || !hostTransforms.isEmpty else {
@@ -643,19 +644,25 @@ extension WPEPreparedRenderPipeline {
             )
         }
 
-        func resolvedTransform(for id: String, stack: Set<String>) -> WPERenderObjectTransform? {
-            if let cached = memo[id] { return cached }
-            guard let local = localTransform(for: id) else { return nil }
+        // Kinetic: a text layer's own geometry is its glyph quad (centre-shifted from the text origin); its children
+        // hang off the text origin, so the shift is removed when the layer is resolved as a parent.
+        var parentMemo: [String: WPERenderObjectTransform] = [:]
+        func resolvedTransform(for id: String, asParent: Bool = false, stack: Set<String>) -> WPERenderObjectTransform? {
+            if let cached = asParent ? parentMemo[id] : memo[id] { return cached }
+            guard var local = localTransform(for: id) else { return nil }
+            if asParent, let shift = parentOriginShifts[id] {
+                local = local.applying(origin: local.origin - shift, scale: nil, angles: nil)
+            }
             guard let parentID = parentByID[id],
                   parentID != id,
                   !stack.contains(parentID),
                   stack.count < 100,
-                  let parent = resolvedTransform(for: parentID, stack: stack.union([id])) else {
-                memo[id] = local
+                  let parent = resolvedTransform(for: parentID, asParent: true, stack: stack.union([id])) else {
+                if asParent { parentMemo[id] = local } else { memo[id] = local }
                 return local
             }
             let resolved = parent.combining(child: local)
-            memo[id] = resolved
+            if asParent { parentMemo[id] = resolved } else { memo[id] = resolved }
             return resolved
         }
 

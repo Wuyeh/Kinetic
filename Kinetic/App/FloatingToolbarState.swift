@@ -78,6 +78,24 @@ struct FloatingToolbarState: Equatable {
         }
     }
 
+    /// R4：Floating Bar 只控制一台显示器（controlledDisplayID）。规则与汇总相同，只是只看这一台的会话；
+    /// 只有一台显示器时与汇总结果完全相同。
+    init(display: DisplayRuntimeState?, isInLibrary: (Wallpaper.ID) -> Bool) {
+        self.init(summary: RuntimeSummary(displays: display.map { [$0] } ?? []), isInLibrary: isInLibrary)
+    }
+
+    /// 执行播放 / 暂停按钮的动作，只作用于一台显示器。
+    @MainActor
+    static func perform(_ action: PlaybackAction, on runtime: WallpaperRuntimeManager, display: DisplayID,
+                        isInLibrary: (Wallpaper.ID) -> Bool) {
+        switch action {
+        case .pauseAll: runtime.pause(.display(display))
+        case .resumeAll: runtime.resume(.display(display))
+        case .reenableAll: runtime.reenable(.display(display), isInLibrary: isInLibrary)
+        case .none: break
+        }
+    }
+
     /// 执行播放 / 暂停按钮的动作；作用于所有显示器。
     /// 重新启用只针对停止前的壁纸仍在资料库中的显示器：壁纸被删除的显示器保持停止，不会重新播放已删除的内容。
     @MainActor
@@ -112,5 +130,36 @@ enum FloatingToolbarAddItem: CaseIterable, Equatable {
         case .importWebFolder: return "shell.toolbar.importWeb"
         case .openSteamWorkshop: return "shell.toolbar.openSteam"
         }
+    }
+}
+
+/// R4 第 10–12 节：Floating Bar 当前控制哪一台显示器（controlledDisplayID）。只是工具条的控制对象，
+/// 不更换壁纸、不 Crossfade、不修改显示器分配。
+struct FloatingBarDisplayControl: Equatable {
+    private(set) var controlledDisplayID: DisplayID?
+
+    /// 显示器列表变化时调用（第一项是系统主屏）。没有受控显示器时控制主屏；受控显示器断开时改为控制主屏，
+    /// 并返回主屏（用于轻量提示）。原显示器重连后不抢回控制权。
+    @discardableResult
+    mutating func synchronize(displayIDs: [DisplayID]) -> DisplayID? {
+        guard let main = displayIDs.first else {
+            controlledDisplayID = nil
+            return nil
+        }
+        guard let current = controlledDisplayID else {
+            controlledDisplayID = main
+            return nil
+        }
+        guard !displayIDs.contains(current) else { return nil }
+        controlledDisplayID = main
+        return main
+    }
+
+    /// 用户在 Display Bubble 中选择；只接受仍连接的显示器。
+    @discardableResult
+    mutating func select(_ display: DisplayID, displayIDs: [DisplayID]) -> Bool {
+        guard displayIDs.contains(display) else { return false }
+        controlledDisplayID = display
+        return true
     }
 }

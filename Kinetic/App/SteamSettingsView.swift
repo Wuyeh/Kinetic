@@ -10,6 +10,8 @@ struct SteamSettingsView: View {
     @ObservedObject var store: SteamStoreService
     /// 1.0 Module 28：Wallpaper Engine 引擎素材。
     var engineAssets: EngineAssetsStore? = nil
+    /// 用户决定（2026-10-06）：年龄分级隐藏开关，默认关闭。
+    var settings: SettingsStore? = nil
 
     @State private var usernameField = ""
     @State private var passwordField = ""
@@ -25,6 +27,10 @@ struct SteamSettingsView: View {
                 accountSection
                 Divider()
                 apiKeySection
+                if let settings {
+                    Divider()
+                    SteamContentRatingSettingsSection(settings: settings)
+                }
                 if let engineAssets {
                     Divider()
                     EngineAssetsSettingsSection(assets: engineAssets, steam: steam)
@@ -340,4 +346,24 @@ struct WorkshopDependenciesSettingsSection: View {
     }
 
     private func refresh() { missing = steam.missingLibraryDependencies() }
+}
+
+/// 设置 › Steam：在线商店的年龄分级显示。默认全部像普通壁纸一样显示；开启后对应分级不再出现在 Steam 页面，
+/// 在筛选器中明确选择该分级时仍显示。
+struct SteamContentRatingSettingsSection: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        Text("settings.steam.rating")
+            .font(.headline)
+        Toggle("settings.steam.rating.hideQuestionable", isOn: Binding(
+            get: { settings.state.steamHideQuestionable },
+            set: { settings.set(\.steamHideQuestionable, to: $0) }))
+        Toggle("settings.steam.rating.hideMature", isOn: Binding(
+            get: { settings.state.steamHideMature },
+            set: { settings.set(\.steamHideMature, to: $0) }))
+        Text("settings.steam.rating.detail")
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
 }

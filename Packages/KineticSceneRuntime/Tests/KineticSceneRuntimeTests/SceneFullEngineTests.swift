@@ -82,6 +82,183 @@ final class SceneFullEngineTests: XCTestCase {
         XCTAssertFalse(runtime.isPrepared)
     }
 
+    @MainActor func testPreviewHostPatchesAuthoredVisibilityWithoutResettingClockOrRecreatingHost() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "showpanel": ["type": "bool", "value": true, "text": "显示"]]]])
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 64, "height": 64], "clearcolor": "0 0 0"],
+            "objects": [["id": 1, "image": "models/layer.json", "size": "64 64 0", "origin": "32 32 0",
+                         "visible": ["user": "showpanel", "value": true]]]])
+        let runtime = KineticSceneRuntime(root: root)
+        runtime.displayView.frame = CGRect(x: 0, y: 0, width: 64, height: 64)
+        defer { runtime.dispose() }
+        try await runtime.prepare()
+        let host = try XCTUnwrap(runtime.fullHostForTesting)
+        await runtime.setPreviewFrameRateCeiling(15)
+        runtime.play(); try await Task.sleep(nanoseconds: 80_000_000)
+        let time = runtime.sceneTime
+        let accepted = try await runtime.updatePropertyValues(["showpanel": .bool(false)])
+        XCTAssertTrue(accepted); XCTAssertTrue(runtime.fullHostForTesting === host)
+        XCTAssertGreaterThanOrEqual(runtime.sceneTime, time)
+        await host.renderFrameNow()
+        let frame = await host.captureFrame()
+        let hidden = try centerPixel(XCTUnwrap(frame))
+        XCTAssertLessThan(hidden[0], 40)
+        runtime.pause(); let frozenTime = runtime.sceneTime
+        let resumed = try await runtime.updatePropertyValues(["showpanel": .bool(true)])
+        XCTAssertTrue(resumed); XCTAssertFalse(runtime.isPlaying)
+        XCTAssertEqual(runtime.sceneTime, frozenTime, accuracy: 0.001)
+        await runtime.disposeAwaitingResources()
+        XCTAssertTrue(host.isDisposed); XCTAssertNil(runtime.fullHostForTesting)
+        XCTAssertTrue(runtime.isDisposed)
+    }
+
+    @MainActor func testUnsupportedPreviewPatchDoesNotMutateHostAndConcurrentDisposeWaitsForRelease() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "unbound": ["type": "slider", "value": 1, "min": 0, "max": 2, "step": 0.001]]]])
+        let runtime = KineticSceneRuntime(root: root)
+        try await runtime.prepare(); let host = try XCTUnwrap(runtime.fullHostForTesting)
+        let accepted = try await runtime.updatePropertyValues(["unbound": .number(2)])
+        XCTAssertFalse(accepted); XCTAssertTrue(runtime.fullHostForTesting === host); XCTAssertTrue(runtime.isPrepared)
+        async let first: Void = host.dispose()
+        async let second: Void = host.dispose()
+        _ = await (first, second)
+        XCTAssertTrue(host.isDisposed); XCTAssertFalse(host.isLoaded)
+        runtime.dispose()
+    }
+
+    @MainActor func testLiveImageAlphaKeepsCurrentHostClockAndActuallyChangesPixels() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "opacity": ["type": "slider", "value": 1, "min": 0, "max": 1, "step": 0.001]]]])
+        try write("materials/base.json", ["passes": [["shader": "solidlayer", "blending": "translucent",
+            "constantshadervalues": ["g_Color": [1, 0, 0, 1]]]]])
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 64, "height": 64], "clearcolor": "0 0 0", "clearenabled": true],
+            "objects": [["id": 1, "image": "models/layer.json", "size": "64 64 0", "origin": "32 32 0",
+                         "alpha": ["user": "opacity", "value": 1]]]])
+        let runtime = KineticSceneRuntime(root: root)
+        defer { runtime.dispose() }
+        try await runtime.prepare(); let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play(); try await Task.sleep(nanoseconds: 100_000_000)
+        let time = runtime.sceneTime
+        await host.renderFrameNow(); let before = try centerPixel(requireFrame(await host.captureFrame()))
+        let accepted = try await runtime.updatePropertyValues(["opacity": .number(0.25)])
+        XCTAssertTrue(accepted); XCTAssertTrue(runtime.fullHostForTesting === host)
+        XCTAssertGreaterThanOrEqual(runtime.sceneTime, time); XCTAssertTrue(runtime.isPlaying)
+        await host.renderFrameNow(); let after = try centerPixel(requireFrame(await host.captureFrame()))
+        XCTAssertLessThan(after[0], before[0], "The accepted patch must change rendered pixels")
+        runtime.pause(); let paused = runtime.sceneTime
+        let reset = try await runtime.updatePropertyValues([:]); XCTAssertTrue(reset)
+        XCTAssertFalse(runtime.isPlaying); XCTAssertEqual(runtime.sceneTime, paused, accuracy: 0.001)
+    }
+
+    @MainActor func testLiveTextSizeAndGroupVisibilityScalePreserveAnimatedTextState() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "size": ["type": "slider", "value": 3, "min": 1, "max": 8, "step": 0.001],
+            "scale": ["type": "slider", "value": 1, "min": 0.25, "max": 2, "step": 0.001],
+            "shown": ["type": "bool", "value": true]]]])
+        // A text script guarantees the full engine; the ongoing clock must survive edits.
+        let script = "'use strict'; export function update(value) { return 'TEXT'; }"
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 128, "height": 96], "clearcolor": "0 0 0"],
+            "objects": [["id": 10, "solid": true, "origin": "64 48 0", "scale": ["user": "scale", "value": "1 1 1"],
+                         "visible": ["user": "shown", "value": true]],
+                        ["id": 2, "parent": 10, "origin": "0 0 0", "pointsize": ["user": "size", "value": 3],
+                         "text": ["value": "TEXT", "script": script], "color": "1 1 1"]]])
+        let runtime = KineticSceneRuntime(root: root)
+        defer { runtime.dispose() }
+        try await runtime.prepare(); let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play(); try await Task.sleep(nanoseconds: 100_000_000)
+        await host.renderFrameNow(); let before = try litPixelCount(requireFrame(await host.captureFrame()))
+        var values: [String: ScenePropertyValue] = ["size": .number(6)]
+        let t = runtime.sceneTime
+        let patched = try await runtime.updatePropertyValues(values); XCTAssertTrue(patched)
+        await host.renderFrameNow(); let large = try litPixelCount(requireFrame(await host.captureFrame()))
+        XCTAssertGreaterThan(large, before); XCTAssertTrue(runtime.fullHostForTesting === host)
+        XCTAssertGreaterThanOrEqual(runtime.sceneTime, t)
+        values["scale"] = .number(0.5)
+        let patched2 = try await runtime.updatePropertyValues(values); XCTAssertTrue(patched2)
+        await host.renderFrameNow(); let small = try litPixelCount(requireFrame(await host.captureFrame()))
+        XCTAssertLessThan(small, large)
+        values["shown"] = .bool(false)
+        let patched3 = try await runtime.updatePropertyValues(values); XCTAssertTrue(patched3)
+        await host.renderFrameNow(); let hidden = try litPixelCount(requireFrame(await host.captureFrame())); XCTAssertEqual(hidden, 0)
+        runtime.pause(); let frozen = runtime.sceneTime
+        values["shown"] = .bool(true)
+        let patched4 = try await runtime.updatePropertyValues(values); XCTAssertTrue(patched4)
+        await host.renderFrameNow(); let shown = try litPixelCount(requireFrame(await host.captureFrame())); XCTAssertGreaterThan(shown, 0)
+        XCTAssertFalse(runtime.isPlaying); XCTAssertEqual(runtime.sceneTime, frozen, accuracy: 0.001)
+        for i in 0..<10 {
+            values["size"] = .number(i.isMultiple(of: 2) ? 3 : 6)
+            let patched5 = try await runtime.updatePropertyValues(values); XCTAssertTrue(patched5)
+            XCTAssertTrue(runtime.fullHostForTesting === host)
+        }
+    }
+
+    @MainActor func testNestedGroupVisibilityRestoresDescendantsAndPreservesScriptOwnClaims() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "outer": ["type": "bool", "value": true], "inner": ["type": "bool", "value": true]]]])
+        let textScript = "'use strict'; export function update(value) { return 'TEXT'; }"
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 128, "height": 96], "clearcolor": "0 0 0"],
+            "objects": [["id": 10, "solid": true, "origin": "64 48 0", "visible": ["user": "outer", "value": true]],
+                        ["id": 20, "parent": 10, "solid": true, "visible": ["user": "inner", "value": true]],
+                        ["id": 2, "parent": 20, "origin": "0 0 0", "pointsize": 5,
+                         "text": ["value": "TEXT", "script": textScript], "color": "1 1 1"]]])
+        let runtime = KineticSceneRuntime(root: root); defer { runtime.dispose() }
+        try await runtime.prepare(); let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play(); try await Task.sleep(nanoseconds: 100_000_000)
+        let time = runtime.sceneTime
+        for _ in 0..<4 {
+            for (values, shown) in [(["outer": ScenePropertyValue.bool(false)], false),
+                                   (["outer": .bool(false), "inner": .bool(false)], false),
+                                   (["outer": .bool(true), "inner": .bool(false)], false),
+                                   (["outer": .bool(true), "inner": .bool(true)], true)] {
+                let accepted = try await runtime.updatePropertyValues(values); XCTAssertTrue(accepted)
+                await host.renderFrameNow()
+                let count = try litPixelCount(requireFrame(await host.captureFrame()))
+                if shown { XCTAssertGreaterThan(count, 0) } else { XCTAssertEqual(count, 0) }
+                XCTAssertTrue(runtime.fullHostForTesting === host)
+                XCTAssertGreaterThanOrEqual(runtime.sceneTime, time)
+            }
+        }
+    }
+
+    @MainActor func testBoundStaticPositionScriptMovesPixelsWithoutReplacingHost() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "general": ["properties": [
+            "x": ["type": "slider", "value": 0.5, "min": 0, "max": 1, "step": 0.001]]]])
+        let script = "'use strict'; export function update(value) { value.x = scriptProperties.x * engine.canvasSize.x; return value; }"
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 64, "height": 64], "clearcolor": "0 0 0"],
+            "objects": [["id": 1, "image": "models/layer.json", "size": "16 16 0",
+                         "origin": ["value": "32 32 0", "script": script,
+                                    "scriptproperties": ["x": ["user": "x", "value": 0.5]]]]]])
+        let runtime = KineticSceneRuntime(root: root); defer { runtime.dispose() }
+        try await runtime.prepare(); let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play(); try await Task.sleep(nanoseconds: 100_000_000)
+        await host.renderFrameNow(); let before = try centerPixel(requireFrame(await host.captureFrame()))
+        let time = runtime.sceneTime
+        let moved = try await runtime.updatePropertyValues(["x": .number(0)]); XCTAssertTrue(moved)
+        await host.renderFrameNow(); let after = try centerPixel(requireFrame(await host.captureFrame()))
+        XCTAssertGreaterThan(before[0], 200); XCTAssertLessThan(after[0], 40)
+        XCTAssertTrue(runtime.fullHostForTesting === host); XCTAssertGreaterThanOrEqual(runtime.sceneTime, time)
+        runtime.pause(); let paused = runtime.sceneTime
+        let reset = try await runtime.updatePropertyValues([:]); XCTAssertTrue(reset)
+        await host.renderFrameNow(); let restored = try centerPixel(requireFrame(await host.captureFrame()))
+        XCTAssertGreaterThan(restored[0], 200); XCTAssertTrue(runtime.fullHostForTesting === host)
+        XCTAssertFalse(runtime.isPlaying); XCTAssertEqual(runtime.sceneTime, paused, accuracy: 0.001)
+    }
+
+    private func litPixelCount(_ image: CGImage) throws -> Int {
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        return (0..<(image.width * image.height)).filter { max(bytes[$0 * 4], bytes[$0 * 4 + 1], bytes[$0 * 4 + 2]) > 80 }.count
+    }
+
+    private func requireFrame(_ frame: CGImage?) throws -> CGImage { try XCTUnwrap(frame) }
+
     /// The fallback / failure frame must look like the screen: authored mid-gray stays mid-gray
     /// (the `_srgb` drawable is not gamma-decoded twice on capture).
     @MainActor func testCapturedFrameKeepsAuthoredColors() async throws {
@@ -202,6 +379,55 @@ final class SceneFullEngineTests: XCTestCase {
         XCTAssertGreaterThan(quiet[1], 200, "silence again: the layer returns \(quiet)")
     }
 
+    /// App inputs arriving before a scene exists replay into its media gate, then audio updates in place.
+    @MainActor func testHostMediaAndAudioReplayWithoutRecreatingSceneOrClock() async throws {
+        try writeScene(originScript: """
+            'use strict';
+            let audio;
+            let ready = false;
+            export function mediaPropertiesChanged(event) { ready = event.title === 'KineticAudioAcceptance'; }
+            export function update(value) {
+                if (!audio) { audio = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_16); }
+                value.x = ready && audio.average[0] > 0.5 ? -100000 : 32;
+                return value;
+            }
+            """)
+        SceneExternalInputs.publishMedia(playing: true, title: "KineticAudioAcceptance", duration: 100, position: 20)
+        SceneExternalInputs.publishSystemAudio(nil)
+        let runtime = KineticSceneRuntime(root: root)
+        defer {
+            runtime.dispose()
+            SceneExternalInputs.publishSystemAudio(nil)
+            SceneExternalInputs.publishMedia(playing: false, title: nil)
+        }
+        try await runtime.prepare()
+        let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play()
+        func settle(until predicate: ([UInt8]) -> Bool) async throws -> [UInt8] {
+            var color: [UInt8] = []
+            for _ in 0..<30 {
+                try await Task.sleep(nanoseconds: 40_000_000)
+                await host.renderFrameNow()
+                if let frame = await host.captureFrame() { color = try centerPixel(frame) }
+                if color.count == 4, predicate(color) { break }
+            }
+            return color
+        }
+        let silent = try await settle(until: { $0[1] > 200 })
+        XCTAssertGreaterThan(silent[1], 200)
+        let time = runtime.sceneTime
+        SceneExternalInputs.publishSystemAudio(try .init(left: .init(repeating: 1, count: 64), right: .init(repeating: 1, count: 64)))
+        let loud = try await settle(until: { $0[1] < 30 })
+        XCTAssertLessThan(loud[1], 30, "A preloaded media title opened the author's gate")
+        SceneExternalInputs.publishMedia(playing: false, title: nil)
+        let noPlayer = try await settle(until: { $0[1] > 200 })
+        XCTAssertGreaterThan(noPlayer[1], 200, "Clearing media reaches the author without reloading")
+        XCTAssertTrue(runtime.fullHostForTesting === host)
+        XCTAssertGreaterThan(runtime.sceneTime, time)
+        SceneExternalInputs.publishSystemAudio(nil)
+        XCTAssertFalse(KineticWPEAudioInput.isActive)
+    }
+
     /// Cursor response: the global-monitor pointer (here injected) reaches SceneScript's `input.cursorWorldPosition`.
     @MainActor func testCursorPositionReachesSceneScript() async throws {
         try writeScene(originScript: """
@@ -252,6 +478,49 @@ final class SceneFullEngineTests: XCTestCase {
             XCTAssertTrue(runtime.usesFullEngine)
             let green = try centerPixel(XCTUnwrap(runtime.preparedFrame))[1]
             if shown { XCTAssertGreaterThan(green, 200) } else { XCTAssertLessThan(green, 30, "default false hides the layer") }
+        }
+    }
+
+    @MainActor func testPropertyOverridesReachGPUWithoutWritingSourceManifest() async throws {
+        try write("project.json", ["type": "scene", "file": "scene.json", "title": "Properties",
+            "general": ["properties": ["showpanel": ["type": "bool", "value": false]]]])
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 64, "height": 64], "clearcolor": "0 0 0"],
+            "objects": [["id": 1, "name": "Toggle", "image": "models/layer.json", "size": "64 64 0",
+                "visible": ["user": "showpanel", "value": false], "origin": "32 32 0",
+                "effects": [["id": 2, "file": "effects/probe/effect.json"]]]]])
+        let source = try Data(contentsOf: root.appendingPathComponent("project.json"))
+        for shown in [false, true, false] {
+            let runtime = KineticSceneRuntime(root: root, propertyValues: ["showpanel": .bool(shown)])
+            defer { runtime.dispose() }
+            try await runtime.prepare()
+            XCTAssertTrue(runtime.usesFullEngine)
+            let green = try centerPixel(XCTUnwrap(runtime.preparedFrame))[1]
+            if shown { XCTAssertGreaterThan(green, 200) } else { XCTAssertLessThan(green, 30) }
+            runtime.play(); runtime.pause(); XCTAssertNotNil(runtime.preparedFrame)
+        }
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("project.json")), source)
+        let invalid = KineticSceneRuntime(root: root, propertyValues: ["unknown": .bool(true)])
+        defer { invalid.dispose() }
+        do { try await invalid.prepare(); XCTFail("Unknown override accepted") } catch {}
+        XCTAssertFalse(invalid.isPrepared)
+    }
+
+    @MainActor func testColorPropertyOverridesReachImageTint() async throws {
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 64, "height": 64], "clearcolor": "0 0 0"],
+            "objects": [["id": 1, "name": "Tinted image", "image": "models/layer.json", "size": "64 64 0",
+                         "origin": "32 32 0", "color": ["user": "tint", "value": "1 0 0"]]]])
+        try write("project.json", ["type": "scene", "file": "scene.json", "title": "Color",
+            "general": ["properties": ["tint": ["type": "color", "value": "1 0 0"]]]])
+        try write("materials/base.json", ["passes": [["shader": "genericimage2", "blending": "disabled", "textures": ["pixel.png"]]]])
+        for (values, channel) in [([String: ScenePropertyValue](), 0), (["tint": .string("0 1 0")], 1)] {
+            let runtime = KineticSceneRuntime(root: root, propertyValues: values)
+            defer { runtime.dispose() }
+            try await runtime.prepare()
+            let pixel = try centerPixel(XCTUnwrap(runtime.preparedFrame))
+            XCTAssertGreaterThan(pixel[channel], 200)
+            XCTAssertLessThan(pixel[1 - channel], 30)
         }
     }
 
@@ -391,6 +660,9 @@ final class SceneFullEngineTests: XCTestCase {
             "objects": [["id": 1, "name": "Sheet", "image": "models/sheet.json", "size": "64 64 0", "origin": "32 32 0"]]])
         let runtime = KineticSceneRuntime(root: root)
         defer { runtime.dispose() }
+        // The sample points assume the square canvas fills the view; under 自动 a square canvas is letterboxed on a
+        // 16:10 test screen and the probe would land between two texels of this tiny 4×2 atlas.
+        runtime.displayFit = .fill
         do { try await runtime.prepare() } catch { XCTFail("Sprite sheet scene failed: \(error)"); throw error }
         XCTAssertTrue(runtime.usesFullEngine)
         let frame = try XCTUnwrap(runtime.preparedFrame)
@@ -406,6 +678,111 @@ final class SceneFullEngineTests: XCTestCase {
         XCTAssertGreaterThan(left[0], 200, "frame 0 is red on the left: \(left)")
         XCTAssertGreaterThan(right[0], 200, "frame 0 also fills the right half (not the atlas's green frame): \(right)")
         XCTAssertLessThan(right[1], 60, "\(right)")
+    }
+
+    /// A child of a text object follows the text object's origin (its alignment anchor), not the synthesized
+    /// glyph quad's centre. 2026-10-06, Workshop 3379996991: the date under a right-aligned clock (both moved by a
+    /// scripted group) drew half a clock width to the left and up over the clock.
+    @MainActor func testChildOfTextObjectFollowsTheTextOrigin() async throws {
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 400, "height": 200], "clearcolor": "0 0 0"],
+            "objects": [
+                // The script moves the group (authored at the canvas corner), as 3379996991's position sliders do.
+                ["id": 3, "name": "Group",
+                 "origin": ["value": "0 0 0", "script": "'use strict';\nexport function update(value) {\n\treturn new Vec3(300, 100, 0);\n}"]],
+                ["id": 1, "name": "Clock", "parent": 3, "text": ["value": "WWWW"], "font": "systemfont_arial",
+                 "pointsize": 12, "color": "1 1 1", "horizontalalign": "right", "verticalalign": "bottom",
+                 "origin": "0 0 0", "padding": 0],
+                ["id": 2, "name": "Marker", "parent": 1, "text": ["value": "MM"], "font": "systemfont_arial",
+                 "pointsize": 12, "color": "1 0 0", "horizontalalign": "left", "verticalalign": "top",
+                 "origin": "0 -10 0", "padding": 0]
+            ]])
+        let runtime = KineticSceneRuntime(root: root)
+        defer { runtime.dispose() }
+        do { try await runtime.prepare() } catch { XCTFail("Text scene failed: \(error)"); throw error }
+        XCTAssertTrue(runtime.usesFullEngine)
+        let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play()
+        var image = try XCTUnwrap(runtime.preparedFrame)
+        for _ in 0..<5 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            await host.renderFrameNow()
+            if let frame = await host.captureFrame() { image = frame }
+        }
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let data = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        var whiteMin = Int.max, whiteMax = Int.min, redMin = Int.max, whiteBottom = Int.min, redTop = Int.max
+        for y in 0..<image.height {
+            for x in 0..<image.width {
+                let i = (y * image.width + x) * 4
+                let r = Int(data[i]), g = Int(data[i + 1]), b = Int(data[i + 2])
+                if r > 170, g > 170, b > 170 { whiteMin = min(whiteMin, x); whiteMax = max(whiteMax, x); whiteBottom = max(whiteBottom, y) }
+                if r > 170, g < 80, b < 80 { redMin = min(redMin, x); redTop = min(redTop, y) }
+            }
+        }
+        XCTAssertLessThan(whiteMin, whiteMax, "clock text drawn"); XCTAssertNotEqual(redMin, Int.max, "marker text drawn")
+        let clockWidth = Double(whiteMax - whiteMin)
+        // The marker starts at the clock's right edge (the clock's origin), not half a clock width to the left.
+        XCTAssertLessThan(abs(Double(redMin - whiteMax)), clockWidth * 0.2,
+                          "marker left \(redMin) vs clock right \(whiteMax), clock width \(clockWidth)")
+        // …and below the clock's baseline (rows grow downward in the captured image), never over the glyphs.
+        XCTAssertGreaterThanOrEqual(redTop, whiteBottom, "marker top \(redTop) vs clock bottom \(whiteBottom)")
+    }
+
+    /// 28.4 display fit (user decision: default "automatic"). A canvas whose shape differs a lot from the display is
+    /// shown whole with bars; "fill" crops it to fill like Wallpaper Engine. Workshop 3814497358 (a portrait scene on
+    /// a landscape display) otherwise lost its clock and audio bars off-screen.
+    func testDisplayFitDecision() {
+        let mac = CGSize(width: 3024, height: 1964)
+        XCTAssertFalse(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: 3840, height: 2160), viewport: mac),
+                       "16:9 on 16:10 fills like Wallpaper Engine")
+        XCTAssertTrue(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: 1212, height: 2155), viewport: mac),
+                      "portrait on landscape shows the whole canvas")
+        XCTAssertTrue(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: 1920, height: 1080), viewport: CGSize(width: 1080, height: 1920)))
+        XCTAssertTrue(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: 3440, height: 1440), viewport: CGSize(width: 1280, height: 1024)),
+                      "more than a quarter cropped")
+        XCTAssertFalse(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: 1000, height: 1000), viewport: CGSize(width: 1000, height: 1020)))
+        XCTAssertFalse(SceneDisplayFit.fill.letterboxes(canvas: CGSize(width: 1212, height: 2155), viewport: mac))
+        XCTAssertTrue(SceneDisplayFit.fit.letterboxes(canvas: CGSize(width: 3840, height: 2160), viewport: mac))
+        XCTAssertFalse(SceneDisplayFit.automatic.letterboxes(canvas: .zero, viewport: mac))
+        XCTAssertFalse(SceneDisplayFit.automatic.letterboxes(canvas: CGSize(width: CGFloat.nan, height: 1), viewport: mac))
+    }
+
+    @MainActor func testDisplayFitLetterboxesOrFillsTheCompleteEngineView() async throws {
+        try write("scene.json", ["camera": ["center": "0 0 0"],
+            "general": ["orthogonalprojection": ["width": 400, "height": 100], "clearcolor": "0 0 0"],
+            "objects": [["id": 1, "name": "Wide", "image": "models/layer.json", "size": "400 100 0",
+                         "origin": ["value": "200 50 0", "script": "'use strict';\nexport function update(value) {\n\treturn value;\n}"]]]])
+        let runtime = KineticSceneRuntime(root: root)
+        defer { runtime.dispose() }
+        runtime.displayFit = .fit
+        do { try await runtime.prepare() } catch { XCTFail("Wide scene failed: \(error)"); throw error }
+        XCTAssertTrue(runtime.usesFullEngine)
+        let host = try XCTUnwrap(runtime.fullHostForTesting)
+        runtime.play()
+        func sample() async throws -> (top: [UInt8], center: [UInt8]) {
+            var image: CGImage?
+            for _ in 0..<4 {
+                try await Task.sleep(nanoseconds: 80_000_000)
+                await host.renderFrameNow()
+                image = await host.captureFrame() ?? image
+            }
+            let frame = try XCTUnwrap(image)
+            let context = try XCTUnwrap(CGContext(data: nil, width: frame.width, height: frame.height, bitsPerComponent: 8,
+                bytesPerRow: frame.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(frame, in: CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
+            let data = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            func pixel(_ y: Int) -> [UInt8] { let i = (y * frame.width + frame.width / 2) * 4; return [data[i], data[i + 1], data[i + 2]] }
+            return (pixel(2), pixel(frame.height / 2))
+        }
+        let fitted = try await sample()
+        XCTAssertGreaterThan(fitted.center[0], 200, "the canvas is shown: \(fitted.center)")
+        XCTAssertLessThan(fitted.top[0], 40, "a 4:1 canvas leaves bars above and below: \(fitted.top)")
+        runtime.displayFit = .fill
+        let filled = try await sample()
+        XCTAssertGreaterThan(filled.top[0], 200, "fill crops the canvas to cover the view: \(filled.top)")
     }
 
     @MainActor func testDisposeDuringPrepareReleasesTheHost() async throws {

@@ -10,10 +10,14 @@ import os
 final class SceneExtendedEngine: @unchecked Sendable {
     let backend: KineticWPEImageBackend
     let frame: CGImage
+    /// The authored canvas (orthographic projection) size.
+    let canvasSize: CGSize
     var device: MTLDevice { backend.device }
     var residentBytes: Int { backend.residentBytes }
 
-    private init(backend: KineticWPEImageBackend, frame: CGImage) { self.backend = backend; self.frame = frame }
+    private init(backend: KineticWPEImageBackend, frame: CGImage, canvasSize: CGSize) {
+        self.backend = backend; self.frame = frame; self.canvasSize = canvasSize
+    }
     static func prepare(root: URL, engineAssets: URL?, limits: SceneLimits) async throws -> Self {
         let assets = try SceneAssetResolver(root: root, additionalRoots: engineAssets.map { [$0] } ?? [], limits: limits)
         let metadata = try SceneImportMetadata.inspect(root: root, limits: limits)
@@ -50,7 +54,7 @@ final class SceneExtendedEngine: @unchecked Sendable {
             try await backend.render(time: 0, cursor: SIMD2(repeating: 0.5), target: target)
             try Task.checkCancellation()
             let image = try SceneMetalEngine.snapshot(target)
-            return Self(backend: backend, frame: image)
+            return Self(backend: backend, frame: image, canvasSize: CGSize(width: width, height: height))
         } catch { await backend.dispose(); throw translate(error) }
     }
     static func translate(_ error: Error) -> Error {

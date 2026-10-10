@@ -203,6 +203,29 @@ final class LaunchAndLoginItemTests: XCTestCase {
         XCTAssertEqual(window.alphaValue, 1)
     }
 
+    func testClosingTheMainWindowHidesTheDockIconUntilItIsOpenedAgain() {
+        // 用户 2026-10-08：关闭主窗口后 App 继续运行、只留菜单栏图标；从菜单栏再次打开主窗口时程序坞图标回来。
+        let previous = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(previous) }
+        NSApp.setActivationPolicy(.regular)
+        let appDelegate = AppDelegate()
+        let window = makeWindow()
+        window.orderFront(nil)
+        appDelegate.mainWindowDidAppear(window)
+
+        window.orderOut(nil)
+        spin()
+        XCTAssertEqual(NSApp.activationPolicy(), .regular, "只是隐藏（登录启动的做法）不算关闭")
+
+        window.orderFront(nil)
+        window.close()
+        spin()
+        XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+
+        appDelegate.willShowMainWindow()
+        XCTAssertEqual(NSApp.activationPolicy(), .regular)
+    }
+
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 160),
                               styleMask: [.titled], backing: .buffered, defer: false)

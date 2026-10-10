@@ -4,6 +4,7 @@ import Metal
 
 struct WPESceneScriptPresentationSnapshot {
     var staticCamera: WPEStaticCameraScriptSnapshot?
+    let ownVisibility: [String: Bool]
     let layerVisibility: [String: Bool]
     let textVisibility: [String: Bool]
     let layerAlpha: [String: Double]
@@ -24,6 +25,7 @@ struct WPESceneScriptFramePublicationSnapshot {
 extension WPEMetalSceneRenderer {
     func authoredTransformAnimations(at time: Double) -> LiveScriptTransforms {
         var transforms = LiveScriptTransforms()
+        transforms.scales = livePropertyScales
         transforms.origins.reserveCapacity(dynamicOriginAnimations.count)
         // A selected camera owns its first-frame clock and complete-channel admission.
         // Its children see that same pose without keeping a finished intro active.
@@ -41,6 +43,7 @@ extension WPEMetalSceneRenderer {
     func captureSceneScriptPresentation() -> WPESceneScriptPresentationSnapshot {
         WPESceneScriptPresentationSnapshot(
             staticCamera: sceneScriptSharedState?.staticCameraSnapshot(),
+            ownVisibility: ownVisibilityByID,
             layerVisibility: liveLayerVisibility,
             textVisibility: liveTextVisibility,
             layerAlpha: liveLayerAlpha,
@@ -57,6 +60,7 @@ extension WPEMetalSceneRenderer {
         if let camera = snapshot.staticCamera {
             sceneScriptSharedState?.restoreStaticCamera(camera)
         }
+        ownVisibilityByID = snapshot.ownVisibility
         liveLayerVisibility = snapshot.layerVisibility
         liveTextVisibility = snapshot.textVisibility
         liveLayerAlpha = snapshot.layerAlpha
@@ -363,7 +367,10 @@ extension WPEMetalSceneRenderer {
                 scales: transforms.scales,
                 angles: transforms.angles,
                 parentByID: objectParentByID,
-                hostTransforms: layerAncestorLocalTransformsByID
+                hostTransforms: layerAncestorLocalTransformsByID,
+                parentOriginShifts: textParentOriginShifts(
+                    liveOrigins: transforms.origins, scales: transforms.scales, angles: transforms.angles
+                )
             )
         result = result.applyingScriptLayerPresentation(frameLayerPresentation)
         if !liveCreatedLayers.isEmpty {

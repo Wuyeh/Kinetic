@@ -101,6 +101,10 @@ struct WPEMetalUpscalePlan: Equatable, Sendable {
         case .center: 1.0
         case .contain: min(axisX, axisY)
         case .cover, .stretch: max(axisX, axisY)
+        case .custom(let crop):
+            // The chosen region fills the drawable, so it needs more pixels than cover as it zooms in.
+            Double(drawableSize.width) / (Double(crop.region(source: worldCanvas, target: drawableSize).width)
+                * Double(worldCanvas.width))
         }
         // Never above 1: rendering past the authored canvas is supersampling, a
         // different feature.

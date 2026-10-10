@@ -104,6 +104,21 @@ final class SceneRendererTests: XCTestCase {
         XCTAssertEqual(runtime.state.playbackState, .playing)
         runtime.stop(); XCTAssertNil(host.content)
     }
+    /// 28.4：设置 › 播放 › 场景壁纸显示方式作用于新建的场景，并立即更新正在显示的场景。
+    @MainActor func testDisplayFitSettingReachesNewAndShowingScenes() {
+        let original = SceneRenderer.displayFit
+        defer { SceneRenderer.applyDisplayFit(original) }
+        let wallpaper = Wallpaper(name: "fit", type: .scene, source: .local,
+                                  resourceURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-scene-\(UUID().uuidString)"))
+        SceneRenderer.applyDisplayFit(.fit)
+        let renderer = SceneRenderer(wallpaper: wallpaper, engineAssets: nil)
+        defer { renderer.dispose() }
+        XCTAssertEqual(renderer.scene.displayFit, .fit)
+        SceneRenderer.applyDisplayFit(.fill)
+        XCTAssertEqual(renderer.scene.displayFit, .fill)
+        XCTAssertEqual(SceneDisplayFit(SceneDisplayFitSetting.automatic), .automatic)
+        XCTAssertEqual(SceneDisplayFit(SceneDisplayFitSetting.fit), .fit)
+    }
     /// 28.4：缺少创意工坊依赖项时，错误按编号说明并指向 设置 › Steam（与是否设置引擎素材无关），旧壁纸保留。
     @MainActor func testMissingWorkshopDependencyPointsToSteamSettings() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("KineticDependencyScene-\(UUID().uuidString)")

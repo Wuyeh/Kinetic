@@ -9,6 +9,15 @@ enum ContentSortMode: String, CaseIterable, Codable, Sendable {
     case name
     /// 壁纸类型（固定顺序：Scene、Web、视频）。只是排序，不改变显示哪些类型。
     case type
+    /// 仅 Steam 在线商店：保留服务器返回的热门排名。
+    case popularity
+    /// Module 46，仅壁纸列表页面：列表自己的顺序，也就是轮播顺序。
+    case listOrder
+
+    static func available(inSteamStore: Bool, inList: Bool = false) -> [ContentSortMode] {
+        if inSteamStore { return [.dateAdded, .popularity, .name, .type] }
+        return inList ? [.dateAdded, .name, .type, .listOrder] : [.dateAdded, .name, .type]
+    }
 
     var titleKey: String { "content.sort.\(rawValue)" }
 }
@@ -108,8 +117,11 @@ enum ContentQuery {
     /// 严格全序：最后总以原有顺序决定，所以每次刷新结果都一样。
     private static func precedes(_ a: Entry, _ b: Entry, by mode: ContentSortMode) -> Bool {
         switch mode {
-        case .dateAdded:
+        case .dateAdded, .popularity:
             if let order = compareDates(a.date, b.date) { return order }
+        case .listOrder:
+            // 页面按列表顺序传入；保持原有顺序。
+            break
         case .name:
             if let order = compareNames(a.wallpaper.name, b.wallpaper.name) { return order }
         case .type:
@@ -162,6 +174,9 @@ extension ContentQuery {
                 let tb = b.type.flatMap { typeOrder.firstIndex(of: $0) } ?? typeOrder.count
                 if ta != tb { return ta < tb }
                 if let order = compareNames(a.name, b.name) { return order }
+            case .popularity, .listOrder:
+                // Steam 的排名跨页连续；不能再按发布时间或名称覆盖它。
+                break
             }
             return a.index < b.index
         }.map { $0.item }

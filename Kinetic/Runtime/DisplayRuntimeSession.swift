@@ -65,6 +65,21 @@ final class DisplayRuntimeSession {
     /// 这个会话是否使用该桌面宿主（Module 6：一个宿主只能属于一台显示器）。
     func uses(_ host: DesktopContentHost) -> Bool { desktop === host }
 
+    /// Configuration may update an active renderer in place without issuing a playback event.
+    /// The operation remains renderer-agnostic; failures only report and retain the active surface.
+    func configureActive(_ id: Wallpaper.ID,
+        configure: (WallpaperRenderer, @escaping @MainActor (Error) -> Void) -> Bool) -> Bool {
+        guard activeWallpaper?.id == id, state.preparingWallpaperID == nil,
+              [.playing, .manualPaused, .smartPaused].contains(state.playbackState),
+              let renderer = activeRenderer else { return false }
+        let accepted = configure(renderer) { [weak self, weak renderer] error in
+            guard let self, let renderer, self.activeRenderer === renderer else { return }
+            self.onFailure?(WallpaperRuntimeFailure(wallpaper: renderer.wallpaper, error: error, displayID: self.displayID))
+        }
+        if accepted { onClearFailure?() }
+        return accepted
+    }
+
     /// 这台显示器是否正在显示或准备这张壁纸（包括壁纸模型本身）。
     func isUsing(_ id: Wallpaper.ID) -> Bool {
         state.activeWallpaperID == id || state.preparingWallpaperID == id
@@ -156,6 +171,12 @@ final class DisplayRuntimeSession {
         let renderer = request.renderer
         candidateRenderer = renderer
         preparingWallpaper = request.wallpaper
+        // A renderer prepares before it is on the desktop. Give an unsized view this display's shape first:
+        // a scene otherwise prepares at the main screen's size and stays squeezed on a display shaped differently.
+        if let size = frame?.size, size.width >= 1, size.height >= 1,
+           renderer.displayView.bounds.width < 1 || renderer.displayView.bounds.height < 1 {
+            renderer.displayView.frame = CGRect(origin: .zero, size: size)
+        }
         candidateTask = Task { @MainActor [weak self] in
             do {
                 try await renderer.prepare()

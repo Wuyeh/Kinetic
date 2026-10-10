@@ -17,10 +17,35 @@ final class SteamDownloadPresentation: ObservableObject {
         var id: String { poster.id }
     }
 
+    /// R4：House 弹出的下载列表需要的名称、Poster 与分辨率标签（由 Steam 页面登记，不是下载真相）。
+    struct DownloadInfo: Equatable {
+        let id: String
+        let title: String
+        let posterURL: URL?
+        let type: WallpaperType?
+        let tags: [String]
+
+        init(id: String, title: String, posterURL: URL?, type: WallpaperType?, tags: [String]) {
+            self.id = id
+            self.title = title
+            self.posterURL = posterURL
+            self.type = type
+            self.tags = tags
+        }
+
+        init(item: SteamStoreItem, posterURL: URL?) {
+            self.init(id: item.workshopID, title: item.title, posterURL: posterURL, type: item.type, tags: item.tags)
+        }
+    }
+
     @Published private(set) var activeIDs: Set<String> = []
     @Published private(set) var current: Flight?
     @Published private(set) var exitStartedAt: Date?
+    /// 登记顺序即列表顺序。
+    @Published private(set) var infos: [String: DownloadInfo] = [:]
+    private(set) var infoOrder: [String] = []
     private var posters: [String: Poster] = [:]
+    private var latestFrames: [String: CGRect] = [:]
     private var queue: [Poster] = []
     private var driver: Task<Void, Never>?
     private var generation = 0
@@ -30,6 +55,26 @@ final class SteamDownloadPresentation: ObservableObject {
 
     var isVisible: Bool { !activeIDs.isEmpty || current != nil || exitStartedAt != nil || !queue.isEmpty }
     var pendingIDs: [String] { queue.map(\.id) }
+
+    /// 登记一次下载的展示信息（双击下载、拖到显示器下载、批量下载都登记）。
+    func register(_ info: DownloadInfo) {
+        if infos[info.id] == nil { infoOrder.append(info.id) }
+        infos[info.id] = info
+    }
+
+    /// House 列表的行：只列出仍在进行的任务（排队、下载、校验、入库），按登记顺序。
+    func downloadRows(tasks: [String: SteamAcquisitionService.TaskPhase]) -> [SteamDownloadRow] {
+        let active = tasks.filter { $0.value.isActive }
+        let ordered = infoOrder.filter { active[$0] != nil } + active.keys.filter { infos[$0] == nil }.sorted()
+        return ordered.compactMap { id in
+            guard let phase = active[id] else { return nil }
+            let info = infos[id]
+            return SteamDownloadRow(id: id,
+                                    title: info?.title ?? String(format: NSLocalizedString("steam.item.untitled", comment: ""), id),
+                                    posterURL: info?.posterURL, type: info?.type,
+                                    ratio: SteamResolutionTag.ratioLabel(tags: info?.tags ?? []), phase: phase)
+        }
+    }
 
     @discardableResult
     func begin(_ poster: Poster, reduceMotion: Bool) -> Bool {
@@ -43,11 +88,28 @@ final class SteamDownloadPresentation: ObservableObject {
     }
 
     /// 下载期间窗口 / Grid 可以移动，完成动画使用卡片最近一次实际位置。
+    /// Module 59：卡片滚出可见范围（不再上报位置）后，旧位置可能已经是别的卡片，完成动画改从内容区中央起飞。
     func updateFrames(_ frames: [String: CGRect]) {
+        latestFrames = frames
         for id in activeIDs {
-            guard let frame = frames[id], !frame.isEmpty, let old = posters[id] else { continue }
+            guard let old = posters[id] else { continue }
+            let frame = frames[id].flatMap { $0.isEmpty ? nil : $0 } ?? .zero
             posters[id] = Poster(id: id, image: old.image, frame: frame)
         }
+    }
+
+    /// 测试与诊断：一张下载中的卡片现在记录的起飞位置。
+    func posterFrame(_ id: String) -> CGRect? { posters[id]?.frame }
+
+    /// R4 批量下载：用卡片最近一次的位置与 Poster 开始一个下载的视觉（Clone 只在开始时截取一次）。
+    /// 卡片不在屏幕上时没有位置，完成动画从内容区中央飞向 House。
+    @discardableResult
+    func begin(item: SteamStoreItem, posterURL: URL?, reduceMotion: Bool) -> Bool {
+        let frame = latestFrames[item.workshopID] ?? .zero
+        let image = Self.snapshot(posterURL: posterURL, type: item.type ?? .web, side: max(135, frame.width))
+        guard begin(Poster(id: item.workshopID, image: image, frame: frame), reduceMotion: reduceMotion) else { return false }
+        register(DownloadInfo(item: item, posterURL: posterURL))
+        return true
     }
 
     func finish(_ id: String, succeeded: Bool) {
@@ -153,6 +215,10 @@ enum DownloadAnimationMetrics {
         let t = min(1, max(0, progress))
         return sin(t * 4 * .pi) * (1 - t) * 7
     }
+
+    /// 最终退场：House 在烟雾最浓之前消失（雾遮住 House，House 在雾中消失），之后雾散开。
+    static func houseOpacity(exit progress: Double) -> Double { 1 - min(1, max(0, progress) * 3) }
+    static func smokeOpacity(exit progress: Double) -> Double { sin(min(1, max(0, progress)) * .pi) * 0.55 }
 }
 
 struct SteamPosterFrameKey: PreferenceKey {
@@ -165,7 +231,11 @@ struct SteamPosterFrameKey: PreferenceKey {
 /// 一层不接收鼠标的视觉 Clone 与共享 House；原卡片始终留在 Grid 中。
 struct SteamDownloadOverlay: View {
     @ObservedObject var presentation: SteamDownloadPresentation
+    /// R4：点按 House 打开「正在下载」列表；没有下载服务时 House 只是动画目标。
+    var steam: SteamAcquisitionService? = nil
+    var posters: SteamPosterCache? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var menuAnchor = SteamDownloadsMenuAnchor()
 
     var body: some View {
         GeometryReader { proxy in
@@ -183,45 +253,81 @@ struct SteamDownloadOverlay: View {
                         max(0, min(1, timeline.date.timeIntervalSince($0) / DownloadAnimationMetrics.exit))
                     } ?? 0
                     ZStack(alignment: .topLeading) {
-                        Image(systemName: LocalLibraryIcon.symbolName)
-                            .font(.system(size: DownloadAnimationMetrics.houseSide, weight: .light))
-                            .foregroundStyle(LocalLibraryIcon.color)
-                            .scaleEffect(x: 1 - bounce / 100, y: 1 + bounce / 35, anchor: .bottom)
-                            .opacity(1 - min(1, exit * 3))
-                            .position(x: center.x, y: center.y - bounce)
-                            .accessibilityLabel(Text("steam.download.house"))
+                        // 动画层不接收鼠标；只有 House 本身是按钮（R4 用户要求）。
+                        Group {
+                            if let flight, elapsed < flightDuration {
+                                DownloadPosterRibbon(poster: flight.poster, target: CGPoint(x: center.x, y: center.y - 19),
+                                                     progress: elapsed / flightDuration, reduced: reduced)
+                            }
+                            if exit > 0 {
+                                DownloadSmoke(center: center, progress: exit, reduced: reduced)
+                            }
+                        }
+                        .allowsHitTesting(false)
 
-                        if let flight, elapsed < flightDuration {
-                            DownloadPosterRibbon(poster: flight.poster, target: CGPoint(x: center.x, y: center.y - 19),
-                                                 progress: elapsed / flightDuration, reduced: reduced)
-                        }
-                        if exit > 0 {
-                            whiteSmoke(center: center, progress: exit, reduced: reduced)
-                        }
+                        house(bounce: bounce, exit: exit)
+                            .position(x: center.x, y: center.y - bounce)
                     }
                     .frame(width: proxy.size.width, height: proxy.size.height)
                 }
                 .transition(.opacity)
             }
         }
-        .allowsHitTesting(false)
         .accessibilityElement(children: .contain)
     }
 
-    private func whiteSmoke(center: CGPoint, progress: Double, reduced: Bool) -> some View {
+    @ViewBuilder
+    private func house(bounce: Double, exit: Double) -> some View {
+        let image = Image(systemName: LocalLibraryIcon.symbolName)
+            .font(.system(size: DownloadAnimationMetrics.houseSide, weight: .light))
+            .foregroundStyle(LocalLibraryIcon.color)
+            .scaleEffect(x: 1 - bounce / 100, y: 1 + bounce / 35, anchor: .bottom)
+            .opacity(DownloadAnimationMetrics.houseOpacity(exit: exit))
+        if let steam, exit == 0 {
+            Button {
+                menuAnchor.present(steam: steam, presentation: presentation, posters: posters)
+            } label: {
+                image.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background { SteamDownloadsMenuAnchorView(anchor: menuAnchor) }
+            .help(Text("steam.download.house.help"))
+            .accessibilityLabel(Text("steam.download.house"))
+            .accessibilityHint(Text("steam.download.house.help"))
+        } else {
+            image
+                .allowsHitTesting(false)
+                .accessibilityLabel(Text("steam.download.house"))
+        }
+    }
+}
+
+/// 退场时的「白色烟雾」：中性、低饱和的雾团。深色模式为白色；浅色模式用浅灰，否则在浅色窗口背景上看不见（Module 59）。
+struct DownloadSmoke: View {
+    let center: CGPoint
+    let progress: Double
+    let reduced: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    static func mistColor(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .white : Color(white: 0.58)
+    }
+
+    var body: some View {
         Canvas { context, _ in
             let count = reduced ? 5 : 22
+            let color = Self.mistColor(colorScheme)
             for i in 0..<count {
                 var mist = context
                 let angle = Double(i) * 2.39996
                 let distance = CGFloat(8 + progress * Double(20 + i % 7 * 4))
                 let radius = CGFloat(6 + i % 4) * (1 + progress)
                 let point = CGPoint(x: center.x + cos(angle) * distance, y: center.y + sin(angle) * distance)
-                mist.opacity = sin(progress * .pi) * 0.55
+                mist.opacity = DownloadAnimationMetrics.smokeOpacity(exit: progress)
                 mist.addFilter(.blur(radius: 5))
                 mist.fill(Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius,
                                                     width: radius * 2, height: radius * 2)),
-                             with: .color(.white))
+                             with: .color(color))
             }
         }
     }
@@ -283,12 +389,14 @@ struct DownloadPosterRibbon: View {
 /// 已知总字节数才绘制确定的进度；未知、排队或校验中使用不定进度，不伪造百分比。
 struct SteamDownloadRing: View {
     let progress: Double?
+    /// R4（用户要求）：圆环加粗一点，原来 2 pt。
+    static let lineWidth: CGFloat = 3.25
     var body: some View {
         ZStack {
-            Circle().stroke(.secondary.opacity(0.22), lineWidth: 2)
+            Circle().stroke(.secondary.opacity(0.22), lineWidth: Self.lineWidth)
             if let progress {
                 Circle().trim(from: 0, to: max(0, min(1, progress)))
-                    .stroke(MainWindowDesignTokens.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .stroke(MainWindowDesignTokens.accent, style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             } else {
                 ProgressView().controlSize(.mini).tint(MainWindowDesignTokens.accent)
@@ -299,6 +407,213 @@ struct SteamDownloadRing: View {
         .kineticGlass(in: Circle())
         .accessibilityLabel(Text("steam.download.progress"))
         .accessibilityValue(progress.map { Text(verbatim: "\(Int($0 * 100))%") } ?? Text("steam.download.waiting"))
+    }
+}
+
+// MARK: - R4：House 弹出的「正在下载」列表
+
+/// 列表中的一行（只读投影；下载真相仍是 `SteamAcquisitionService.tasks`）。
+struct SteamDownloadRow: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let posterURL: URL?
+    let type: WallpaperType?
+    /// 例如「16:9」；没有分辨率标签时为 nil。
+    let ratio: String?
+    let phase: SteamAcquisitionService.TaskPhase
+
+    /// 确定的进度（0…1）；排队或未知总大小时为 nil（不定进度）。
+    var progress: Double? {
+        switch phase {
+        case .downloading(let progress): return progress
+        case .verifying, .importing: return 1
+        case .queued, .finished, .failed: return nil
+        }
+    }
+}
+
+/// 创意工坊的分辨率标签 → 画面比例文字。标签只是作者填写的筛选标签，不是实际像素。
+enum SteamResolutionTag {
+    private static let known: [(Int, Int)] = [(16, 9), (16, 10), (21, 9), (32, 9), (48, 9), (4, 3), (5, 4), (3, 2),
+                                             (1, 1), (9, 16), (10, 16), (9, 21), (3, 4)]
+
+    static func ratioLabel(tags: [String]) -> String? {
+        for tag in tags {
+            let lower = tag.lowercased()
+            if let ratio = ratio(fromDimensionsIn: lower) { return ratio }
+            if lower == "ultrawide standard definition" { return "21:9" }
+            if lower == "dual standard definition" { return "32:9" }
+            if lower == "triple standard definition" { return "48:9" }
+            if lower == "portrait standard definition" { return "9:16" }
+            if lower == "dynamic resolution" { return NSLocalizedString("steam.ratio.dynamic", comment: "") }
+        }
+        return nil
+    }
+
+    /// 「3840 x 2160」→ 16:9；接近常见比例（3% 以内）时用常见写法，否则约分。
+    static func ratio(fromDimensionsIn text: String) -> String? {
+        let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+        guard numbers.count >= 2, text.contains("x"), numbers[numbers.count - 2] > 0, numbers[numbers.count - 1] > 0 else { return nil }
+        let width = numbers[numbers.count - 2], height = numbers[numbers.count - 1]
+        let value = Double(width) / Double(height)
+        if let match = known.min(by: { abs(Double($0.0) / Double($0.1) - value) < abs(Double($1.0) / Double($1.1) - value) }),
+           abs(Double(match.0) / Double(match.1) - value) / value < 0.03 {
+            return "\(match.0):\(match.1)"
+        }
+        var a = width, b = height
+        while b != 0 { (a, b) = (b, a % b) }
+        return "\(width / a):\(height / a)"
+    }
+}
+
+/// 弹出位置：House 上方。用系统 NSMenu（与辅助点按菜单同一种小窗口），不是新的独立窗口。
+@MainActor
+final class SteamDownloadsMenuAnchor: ObservableObject {
+    static let width: CGFloat = 340
+    static let rowHeight: CGFloat = 60
+    static let maximumVisibleRows = 5
+    weak var view: NSView?
+
+    func present(steam: SteamAcquisitionService, presentation: SteamDownloadPresentation, posters: SteamPosterCache?) {
+        guard let view else { return }
+        let rows = max(1, min(Self.maximumVisibleRows, presentation.downloadRows(tasks: steam.tasks).count))
+        let height = CGFloat(rows) * Self.rowHeight + 2 * MainWindowDesignTokens.Spacing.small + 22
+        let host = NSHostingView(rootView: SteamDownloadsList(steam: steam, presentation: presentation, posters: posters)
+            .environment(\.locale, Locale(identifier: "zh-Hans"))
+            .frame(width: Self.width, height: height))
+        host.frame = NSRect(x: 0, y: 0, width: Self.width, height: height)
+        let item = NSMenuItem()
+        item.view = host
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(item)
+        // 菜单左上角放在 House 上方：菜单向上展开，底边贴近 House 顶部。
+        let bounds = view.bounds
+        let gap: CGFloat = 6
+        let top = view.isFlipped ? bounds.minY - gap - menu.size.height : bounds.maxY + gap + menu.size.height
+        let point = NSPoint(x: bounds.midX - menu.size.width / 2, y: top)
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+}
+
+struct SteamDownloadsMenuAnchorView: NSViewRepresentable {
+    let anchor: SteamDownloadsMenuAnchor
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        anchor.view = view
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { anchor.view = nsView }
+}
+
+/// 列表内容：左边小 Poster；右边上方名称与比例（灰色小字），下方胶囊进度条。随下载进度实时更新。
+struct SteamDownloadsList: View {
+    @ObservedObject var steam: SteamAcquisitionService
+    @ObservedObject var presentation: SteamDownloadPresentation
+    let posters: SteamPosterCache?
+
+    var body: some View {
+        SteamDownloadsListContent(rows: presentation.downloadRows(tasks: steam.tasks))
+    }
+}
+
+/// 列表的纯展示部分（便于按行验证外观）。
+struct SteamDownloadsListContent: View {
+    let rows: [SteamDownloadRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("steam.download.list.title")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, MainWindowDesignTokens.Spacing.compact)
+                .frame(height: 22, alignment: .center)
+                .accessibilityAddTraits(.isHeader)
+            if rows.isEmpty {
+                Text("steam.download.list.empty")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: SteamDownloadsMenuAnchor.rowHeight)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(rows) { row in SteamDownloadRowView(row: row) }
+                    }
+                }
+                .scrollIndicators(rows.count > SteamDownloadsMenuAnchor.maximumVisibleRows ? .automatic : .hidden)
+            }
+        }
+        .padding(.vertical, MainWindowDesignTokens.Spacing.small)
+    }
+}
+
+private struct SteamDownloadRowView: View {
+    let row: SteamDownloadRow
+
+    var body: some View {
+        HStack(spacing: MainWindowDesignTokens.Spacing.compact) {
+            thumbnail
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: MainWindowDesignTokens.Spacing.small) {
+                    Text(row.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    Text(row.ratio ?? NSLocalizedString("steam.ratio.unknown", comment: ""))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
+                SteamDownloadCapsuleBar(progress: row.progress)
+            }
+        }
+        .padding(.horizontal, MainWindowDesignTokens.Spacing.compact)
+        .frame(height: SteamDownloadsMenuAnchor.rowHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(row.title))
+        .accessibilityValue(row.progress.map { Text(verbatim: "\(Int($0 * 100))%") } ?? Text("steam.download.waiting"))
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let url = row.posterURL, let artwork = PosterArtworkCache.shared.artwork(for: url) {
+            Image(decorative: artwork.firstFrame, scale: 1).resizable().scaledToFill()
+        } else {
+            ZStack {
+                Color(nsColor: .controlBackgroundColor)
+                Image(systemName: row.type == .video ? "play.rectangle" : "photo").foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// 胶囊形状的进度条：已知进度时 #58BFDA 填充；排队 / 未知总大小时一小段来回移动的不定进度，不伪造百分比。
+struct SteamDownloadCapsuleBar: View {
+    let progress: Double?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.22))
+                if let progress {
+                    Capsule().fill(MainWindowDesignTokens.accent)
+                        .frame(width: max(proxy.size.height, proxy.size.width * max(0, min(1, progress))))
+                } else {
+                    TimelineView(.animation(paused: reduceMotion)) { timeline in
+                        let phase = reduceMotion ? 0.5 : (sin(timeline.date.timeIntervalSinceReferenceDate * 2.2) + 1) / 2
+                        Capsule().fill(MainWindowDesignTokens.accent.opacity(0.75))
+                            .frame(width: proxy.size.width * 0.28)
+                            .offset(x: proxy.size.width * 0.72 * phase)
+                    }
+                }
+            }
+        }
+        .frame(height: 6)
+        .clipShape(Capsule())
     }
 }
 

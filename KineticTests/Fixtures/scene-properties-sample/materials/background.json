@@ -1,0 +1,11 @@
+{
+  "passes": [
+    {
+      "shader": "genericimage2",
+      "blending": "disabled",
+      "textures": [
+        "white.png"
+      ]
+    }
+  ]
+}

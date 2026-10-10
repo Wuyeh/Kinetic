@@ -12,6 +12,12 @@ final class WPEEnrichedNowPlayingFeed: WPENowPlayingEventSource {
     private var sourceGeneration: UInt64 = 0
     private var ordinal: UInt64 = 0
     private var latest: MonitorNowPlayingState?
+    private var hostState: MonitorNowPlayingState?
+
+    func receiveFromHost(_ state: MonitorNowPlayingState) {
+        hostState = state
+        fanOut(state)
+    }
 
     #if DEBUG
     var startsRealSourceForTesting = true
@@ -64,11 +70,11 @@ final class WPEEnrichedNowPlayingFeed: WPENowPlayingEventSource {
         guard !sourceIsRunning else { return }
         sourceIsRunning = true
         sourceGeneration &+= 1
+        if let hostState { fanOut(hostState) }
         #if DEBUG
         guard startsRealSourceForTesting else { return }
         #endif
-        // `audioReactive: false` + no-op demand: the scene renderer manages its
-        // own audio capture; this feed must never retain the tap.
+        // Host-fed metadata only; this feed and scene renderers never own audio capture.
         let source = NowPlayingSource(
             audioReactive: false,
             audioDemand: { _ in }

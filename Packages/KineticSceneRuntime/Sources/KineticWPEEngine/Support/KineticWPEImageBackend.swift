@@ -139,8 +139,11 @@ public final class KineticWPEImageBackend: @unchecked Sendable {
         return Self(device: device, storage: storage, budget: budget)
     }
 
-    public func render(time: Double, cursor: SIMD2<Double>, target: MTLTexture) async throws {
-        try await storage.render(time: time, cursor: cursor, target: target)
+    /// - Parameter letterboxed: show the whole canvas (contain) instead of cropping it to fill the target (cover).
+    /// - Parameter crop: Kinetic's 自定义 display region; when set it replaces cover / contain.
+    public func render(time: Double, cursor: SIMD2<Double>, target: MTLTexture, letterboxed: Bool = false,
+                       crop: KineticSceneCrop? = nil) async throws {
+        try await storage.render(time: time, cursor: cursor, target: target, letterboxed: letterboxed, crop: crop)
     }
     public func setExternalBytes(_ bytes: Int) throws { try budget.setExternalBytes(bytes) }
     public func dispose() async { await storage.dispose() }
@@ -163,7 +166,7 @@ public final class KineticWPEImageBackend: @unchecked Sendable {
             executor.sceneClearEnabled = document.general.clearEnabled.resolvedValue
             self.executor = executor; self.textures = textures; self.pipeline = pipeline; self.camera = camera
         }
-        func render(time: Double, cursor: SIMD2<Double>, target: MTLTexture) throws {
+        func render(time: Double, cursor: SIMD2<Double>, target: MTLTexture, letterboxed: Bool, crop: KineticSceneCrop?) throws {
             try Task.checkCancellation()
             guard let executor else { throw KineticWPEBackendError.disposed }
             try executor.targetPool.hostBudget?.checkAdmission()
@@ -176,7 +179,8 @@ public final class KineticWPEImageBackend: @unchecked Sendable {
             }
             guard executor.gpuErrorSink.summary.count == 0 else { throw WPEMetalRenderExecutorError.commandBufferFailed }
             guard let command = executor.textureSourceCommandQueue.makeCommandBuffer() else { throw WPEMetalRenderExecutorError.commandBufferFailed }
-            try executor.encodePresentPass(source: source, target: target, fitMode: .cover,
+            try executor.encodePresentPass(source: source, target: target,
+                                          fitMode: crop.map { .custom($0) } ?? (letterboxed ? .contain : .cover),
                                           worldSourceSize: camera.renderSize, uniforms: nil, into: command)
             command.commit(); command.waitUntilCompleted()
             guard command.status == .completed else { throw WPEMetalRenderExecutorError.commandBufferFailed }

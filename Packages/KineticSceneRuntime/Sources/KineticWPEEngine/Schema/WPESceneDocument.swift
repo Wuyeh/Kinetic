@@ -149,25 +149,29 @@ public struct WPEScenePropertyBinding: Equatable, Sendable {
     public let kind: WPEScenePropertyBindingKind
     public let action: WPEScenePropertyBindingAction
     public let condition: String?
+    /// Original field only; resolve it with the parser's envelope rules without parsing or rebuilding a scene.
+    public let authoredValue: WPESceneJSONValue?
 
     public init(
         propertyKey: String,
         target: WPEScenePropertyBindingTarget,
         kind: WPEScenePropertyBindingKind,
         action: WPEScenePropertyBindingAction,
-        condition: String? = nil
+        condition: String? = nil,
+        authoredValue: WPESceneJSONValue? = nil
     ) {
         self.propertyKey = propertyKey
         self.target = target
         self.kind = kind
         self.action = action
         self.condition = condition
+        self.authoredValue = authoredValue
     }
 }
 
 public enum WPEScenePropertyBindingTarget: Equatable, Sendable {
     case generalField(name: String)
-    /// Reloads the scene so the parser can re-fold the group through every descendant; there is no duplicate incremental planner.
+    /// Presentation updates reuse the existing parent hierarchy and do not reload descendants.
     case groupObject(id: String)
     case imageObject(id: String)
     case textObject(id: String)
@@ -223,6 +227,8 @@ public enum WPEScenePropertyBindingKind: String, Equatable, Sendable {
     case color
     case alpha
     case brightness
+    case scale
+    case pointSize
     case volume
     case uniform
     case combo
@@ -564,6 +570,9 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
     public let localOrigin: SIMD3<Double>?
     /// `scale` is parse-time WORLD; `localScale` is this object's own authored scale. A `scale` SceneScript returns LOCAL, so the renderer needs both.
     public let localScale: SIMD3<Double>?
+    /// `angles` is parse-time WORLD (a rotated parent's turn folded in); this is the text's own authored rotation.
+    /// Nil keeps `angles` for the local centre offset, as before it was parsed.
+    public let localAngles: SIMD3<Double>?
     /// Script-driven alpha/visible on text. The baked `alpha`/`visible` fields are only load-time seeds.
     public let alphaScript: String?
     public let alphaScriptProperties: [String: WPESceneScriptPropertyValue]
@@ -610,6 +619,7 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
         parentObjectID: String? = nil,
         localOrigin: SIMD3<Double>? = nil,
         localScale: SIMD3<Double>? = nil,
+        localAngles: SIMD3<Double>? = nil,
         alphaScript: String? = nil,
         alphaScriptProperties: [String: WPESceneScriptPropertyValue] = [:],
         visibleScript: String? = nil,
@@ -651,6 +661,7 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
         self.parentObjectID = parentObjectID
         self.localOrigin = localOrigin
         self.localScale = localScale
+        self.localAngles = localAngles
         self.alphaScript = alphaScript
         self.alphaScriptProperties = alphaScriptProperties
         self.visibleScript = visibleScript
@@ -665,11 +676,14 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
         alphaAnimation?.scalar(at: time) ?? alpha
     }
 
-    /// `liveColor` is the `color` SceneScript output; nil keeps the authored tint.
+    /// `liveColor` is the `color` SceneScript output; nil keeps the authored tint. Nil alignments keep the authored ones.
     public func withLiveText(
         _ liveText: String,
         alpha liveAlpha: Double,
-        color liveColor: SIMD3<Double>? = nil
+        color liveColor: SIMD3<Double>? = nil,
+        pointSize livePointSize: Double? = nil,
+        horizontalAlignment liveHorizontalAlignment: String? = nil,
+        verticalAlignment liveVerticalAlignment: String? = nil
     ) -> WPESceneTextObject {
         WPESceneTextObject(
             id: id,
@@ -678,7 +692,7 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
             textScript: textScript,
             scriptProperties: scriptProperties,
             fontRelativePath: fontRelativePath,
-            pointSize: pointSize,
+            pointSize: livePointSize ?? pointSize,
             color: liveColor ?? color,
             brightness: brightness,
             alpha: liveAlpha,
@@ -687,8 +701,8 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
             scale: scale,
             angles: angles,
             visible: visible,
-            horizontalAlignment: horizontalAlignment,
-            verticalAlignment: verticalAlignment,
+            horizontalAlignment: liveHorizontalAlignment ?? horizontalAlignment,
+            verticalAlignment: liveVerticalAlignment ?? verticalAlignment,
             maxWidth: maxWidth,
             maxRows: maxRows,
             limitUseEllipsis: limitUseEllipsis,
@@ -704,6 +718,7 @@ public struct WPESceneTextObject: Equatable, Sendable, Identifiable {
             parentObjectID: parentObjectID,
             localOrigin: localOrigin,
             localScale: localScale,
+            localAngles: localAngles,
             alphaScript: alphaScript,
             alphaScriptProperties: alphaScriptProperties,
             visibleScript: visibleScript,

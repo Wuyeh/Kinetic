@@ -95,8 +95,8 @@ enum WPETextLayerSynthesis {
                 anchorOffset: anchorOffset,
                 blockSize: blockSize,
                 ascender: ascender,
-                // Text objects carry no local angles (the schema never parsed one), so rotate the local centre offset with `angles`.
-                angles: object.angles,
+                // The local centre offset turns with the text's own rotation; a rotated parent turns it again when composed.
+                angles: object.localAngles ?? object.angles,
                 scale: object.localScale ?? object.scale
             )
         }
@@ -112,7 +112,7 @@ enum WPETextLayerSynthesis {
             angles: object.angles,
             localOrigin: localOrigin,
             localScale: object.localScale,
-            localAngles: nil,
+            localAngles: object.localAngles,
             visible: object.visible,
             alpha: object.alpha,
             alphaAnimation: object.alphaAnimation,

@@ -22,11 +22,21 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
     public private(set) var usesExtendedRenderGraph = false
     /// Module 28：完整移植引擎（粒子 / Puppet / 文字 / 声音 / 相机 / SceneScript 经上游 JavaScriptCore，用户 2026-10-05 决定）。
     public private(set) var usesFullEngine = false
+    /// Kinetic: how the authored canvas maps onto a display with another aspect ratio. Applies to whichever tier is
+    /// drawing and follows view resizes.
+    public var displayFit: SceneDisplayFit = .automatic {
+        didSet { if displayFit != oldValue { applyDisplayFit() } }
+    }
+    /// Kinetic 显示方式 › 自定义: a user-chosen part of the canvas. Replaces `displayFit` while set, on every tier.
+    public var displayCrop: SceneDisplayCrop? {
+        didSet { if displayCrop != oldValue { applyDisplayFit() } }
+    }
 
     private let root: URL
     /// The user's Wallpaper Engine `assets` folder, searched after the scene's own files. Optional.
     private let engineAssets: URL?
     private let dependencyFolder: ((String) -> URL?)?
+    private let propertyValues: [String: ScenePropertyValue]
     private let limits: SceneLimits
     private let fallback = NSView()
     private let metalView = MTKView()
@@ -35,6 +45,8 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
     private var extendedQueue: MTLCommandQueue?
     private var extendedFrame: Task<Void, Never>?
     private var fullHost: KineticWPESceneHost?
+    /// Kinetic Module 51: kept so a scene prepared later starts throttled too.
+    private var adaptiveFrameRateThrottle = false
     var fullHostForTesting: KineticWPESceneHost? { fullHost }
     private var fullHealthMonitor: Task<Void, Never>?
     /// Complete-engine playback check interval; tests shorten it.
@@ -85,11 +97,15 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
     /// - Parameter dependencyFolder: local folder of a Workshop item listed in the scene's `project.json`
     ///   `dependencies` (complete-engine tier only); nil when it is not on this Mac.
     public init(root: URL, engineAssets: URL? = nil, limits: SceneLimits = .init(),
-                dependencyFolder: ((String) -> URL?)? = nil) {
+                dependencyFolder: ((String) -> URL?)? = nil,
+                propertyValues: [String: ScenePropertyValue] = [:]) {
         self.root = root; self.engineAssets = engineAssets; self.limits = limits
         self.dependencyFolder = dependencyFolder
-        displayView = SceneSurfaceView()
+        self.propertyValues = propertyValues
+        let surface = SceneSurfaceView()
+        displayView = surface
         super.init()
+        surface.onResize = { [weak self] in self?.applyDisplayFit() }
         displayView.wantsLayer = true
         displayView.layer?.masksToBounds = true
         fallback.wantsLayer = true
@@ -118,6 +134,17 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
     /// the reported cause (the ported engines provide built-in programs the bounded runtime looks for on
     /// disk); otherwise the complete engine's error is reported.
     public func prepare() async throws {
+        // Editable authored properties need the complete engine's user bindings, including defaults.
+        // Validate overrides before allocating graphics; never send untrusted values to SceneScript.
+        if !propertyValues.isEmpty {
+            _ = try ScenePropertySchema.read(root: root, limits: limits).validated(propertyValues)
+            try await prepareFull()
+            return
+        }
+        if let schema = try? ScenePropertySchema.read(root: root, limits: limits), schema.hasEditableProperties {
+            try await prepareFull()
+            return
+        }
         var missing: SceneRuntimeError?
         func moveOn(_ error: Error) throws {
             switch error {
@@ -142,11 +169,14 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
             ? displayView.bounds.size : (NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080))
         let host: KineticWPESceneHost
         do { host = try KineticWPESceneHost(sceneFolder: root, engineAssets: engineAssets, size: size,
-                                            dependencyFolder: dependencyFolder) }
+                                            dependencyFolder: dependencyFolder, propertyValues: propertyValues) }
         catch { throw Self.translateFull(error) }
         fullHost = host
         do {
-            let frame = try await host.prepare(timeout: limits.preparationTimeout, muted: isMuted)
+            let fit = displayFit
+            let frame = try await host.prepare(timeout: limits.preparationTimeout, muted: isMuted,
+                                               letterboxes: { fit.letterboxes(canvas: $0, viewport: size) },
+                                               crop: displayCrop?.engineCrop)
             try Task.checkCancellation()
             guard !isDisposed, token == generation, fullHost === host else { throw SceneRuntimeError.disposed }
             if let frame { preparedFrame = frame; fallback.layer?.contents = frame }
@@ -159,6 +189,7 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
                 view.topAnchor.constraint(equalTo: displayView.topAnchor), view.bottomAnchor.constraint(equalTo: displayView.bottomAnchor)])
             usesFullEngine = true
             isPrepared = true
+            if adaptiveFrameRateThrottle { await host.setAdaptiveFrameRateThrottle(true) }
         } catch {
             if fullHost === host { fullHost = nil }
             await host.dispose()
@@ -215,6 +246,7 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
         guard let queue = result.device.makeCommandQueue() else { await result.backend.dispose(); throw SceneRuntimeError.graphics("extended presentation queue") }
         extendedEngine = result; extendedQueue = queue; usesExtendedRenderGraph = true
         preparedFrame = result.frame; fallback.layer?.contents = result.frame
+        updateFallbackGravity()
         metalView.device = result.device; metalView.delegate = self
         isPrepared = true
     }
@@ -272,8 +304,62 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
         if let failure { throw failure }
         engine = result.0; preparedFrame = firstFrame
         fallback.layer?.contents = firstFrame
+        updateFallbackGravity()
         metalView.device = result.0.device; metalView.delegate = self
         isPrepared = true
+    }
+
+    private var viewportSize: CGSize {
+        let bounds = displayView.bounds.size
+        if bounds.width >= 1, bounds.height >= 1 { return bounds }
+        return NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
+    }
+
+    private static func canvasSize(of engine: SceneMetalEngine) -> CGSize {
+        CGSize(width: CGFloat(engine.graph.document.size.x), height: CGFloat(engine.graph.document.size.y))
+    }
+
+    /// A view-normalised cursor (bottom-left origin) moved into the canvas under a 自定义 region (top-left origin).
+    private static func canvasCursor(_ cursor: SIMD2<Double>, in region: CGRect) -> SIMD2<Double> {
+        SIMD2(Double(region.minX) + cursor.x * Double(region.width), Double(1 - region.maxY) + cursor.y * Double(region.height))
+    }
+
+    /// Kinetic: the authored canvas (orthographic projection) size read from the scene files, without preparing an
+    /// engine. Nil when the scene does not state one.
+    public nonisolated static func canvasSize(root: URL, limits: SceneLimits = .init()) -> CGSize? {
+        guard let assets = try? SceneAssetResolver(root: root, limits: limits),
+              let metadata = try? SceneImportMetadata.inspect(root: root, limits: limits),
+              let source = try? assets.readSceneOwned(metadata.entry, maximumBytes: limits.maximumJSONBytes),
+              let json = try? SceneJSON.parse(source, limits: limits) else { return nil }
+        let projection = json["general"]["orthogonalprojection"]
+        guard let width = projection["width"].number, let height = projection["height"].number,
+              width.isFinite, height.isFinite, width >= 1, height >= 1 else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    /// The bounded / image tiers' first frame has the canvas's own aspect ratio; the complete engine's is captured
+    /// from the presented view and already fitted.
+    private func updateFallbackGravity() {
+        let canvas = engine.map(Self.canvasSize(of:)) ?? extendedEngine?.canvasSize
+        let letterboxed = canvas.map { displayFit.letterboxes(canvas: $0, viewport: viewportSize) } ?? false
+        fallback.layer?.contentsGravity = letterboxed ? .resizeAspect : .resizeAspectFill
+        // Layer contents use a bottom-left unit square.
+        let region = canvas.flatMap { canvas in displayCrop.map { $0.region(canvas: canvas, viewport: viewportSize) } }
+        fallback.layer?.contentsRect = region.map { CGRect(x: $0.minX, y: 1 - $0.maxY, width: $0.width, height: $0.height) }
+            ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+    }
+
+    private func applyDisplayFit() {
+        guard !isDisposed else { return }
+        if let fullHost, let canvas = fullHost.canvasSize {
+            fullHost.setLetterboxed(displayFit.letterboxes(canvas: canvas, viewport: viewportSize))
+        }
+        fullHost?.setCrop(displayCrop?.engineCrop)
+        updateFallbackGravity()
+        if isPrepared, !isPlaying, !failed, engine != nil || extendedEngine != nil {
+            needsPausedRedraw = true
+            metalView.draw()
+        }
     }
 
     public func play() {
@@ -298,6 +384,36 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
     }
     public func resume() { play() }
     public func setMuted(_ muted: Bool) { isMuted = muted; fullHost?.setMuted(muted) }
+
+    /// UI preview / parameter adapters reuse the complete engine's existing patch plan.
+    public func updatePropertyValues(_ values: [String: ScenePropertyValue]) async throws -> Bool {
+        guard !isDisposed else { throw SceneRuntimeError.disposed }
+        let validated = try ScenePropertySchema.read(root: root, limits: limits).validated(values)
+        guard let fullHost else { return false }
+        return await fullHost.updatePropertyValues(validated)
+    }
+    /// Kinetic Module 51: while on battery, in Low Power Mode or running hot, draw at half rate (30 → 15 fps).
+    public func setAdaptiveFrameRateThrottle(_ active: Bool) async {
+        guard adaptiveFrameRateThrottle != active else { return }
+        adaptiveFrameRateThrottle = active
+        metalView.preferredFramesPerSecond = active ? 15 : 30
+        await fullHost?.setAdaptiveFrameRateThrottle(active)
+    }
+    public func setPreviewFrameRateCeiling(_ framesPerSecond: Int) async {
+        let fps = min(30, max(1, framesPerSecond))
+        metalView.preferredFramesPerSecond = fps
+        await fullHost?.setFrameRateCeiling(fps)
+    }
+    public func capturePreviewFrame() async -> CGImage? {
+        if let fullHost { return await fullHost.captureFrame() }
+        return preparedFrame
+    }
+    /// A bounded preview must finish releasing its previous host before loading another.
+    public func disposeAwaitingResources() async {
+        pause()
+        if let fullHost { await fullHost.dispose() }
+        dispose()
+    }
     public func dispose() {
         guard !isDisposed else { return }
         pause(); isDisposed = true; generation &+= 1
@@ -328,7 +444,7 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
         guard isPrepared, (isPlaying || needsPausedRedraw), !isDisposed, !failed, !frameInFlight,
               scriptFrame == nil, let engine else { return }
         let token = generation
-        let cursor: SIMD2<Float>
+        var cursor: SIMD2<Float>
         if let window = displayView.window {
             let position = NSEvent.mouseLocation
             let local = window.convertPoint(fromScreen: position)
@@ -336,12 +452,18 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
             cursor = SIMD2(Float(min(1, max(0, point.x / max(1, displayView.bounds.width)))),
                            Float(min(1, max(0, point.y / max(1, displayView.bounds.height)))))
         } else { cursor = SIMD2(repeating: 0.5) }
+        if let displayCrop {
+            let region = displayCrop.region(canvas: Self.canvasSize(of: engine), viewport: viewportSize)
+            let mapped = Self.canvasCursor(SIMD2(Double(cursor.x), Double(cursor.y)), in: region)
+            cursor = SIMD2(Float(mapped.x), Float(mapped.y))
+        }
         let time = sceneTime
         if isPlaying, let scripts {
             let epoch = scriptEpoch, delta = max(0, time - lastScriptTime)
             scriptFrame = Task { [weak self] in
                 do {
-                    let values = try await scripts.update(time: time, delta: delta, cursor: cursor, audio: self?.audioSpectrum ?? .silence)
+                    let values = try await scripts.update(time: time, delta: delta, cursor: cursor,
+                        audio: SceneExternalInputs.systemAudio ?? self?.audioSpectrum ?? .silence)
                     guard let self, !self.isDisposed, self.generation == token else { return }
                     self.scriptFrame = nil
                     guard self.isPlaying, self.scriptEpoch == epoch else {
@@ -398,9 +520,16 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
                 cursor = SIMD2(min(1, max(0, local.x / max(1, displayView.bounds.width))),
                                min(1, max(0, local.y / max(1, displayView.bounds.height))))
             }
+            let letterboxed = displayFit.letterboxes(canvas: engine.canvasSize, viewport: CGSize(width: width, height: height))
+            let crop = displayCrop
+            if let crop {
+                let region = crop.region(canvas: engine.canvasSize, viewport: CGSize(width: width, height: height))
+                cursor = Self.canvasCursor(cursor, in: region)
+            }
             extendedFrame = Task { [weak self] in
                 do {
-                    try await engine.backend.render(time: time, cursor: cursor, target: completed.texture)
+                    try await engine.backend.render(time: time, cursor: cursor, target: completed.texture, letterboxed: letterboxed,
+                                                    crop: crop?.engineCrop)
                     try Task.checkCancellation()
                     guard let self, !self.isDisposed, !self.failed, self.generation == token else { return }
                     guard self.scriptEpoch == epoch else {
@@ -451,6 +580,8 @@ public final class KineticSceneRuntime: NSObject, MTKViewDelegate {
                 frameTargets = [first, second]
             }
             let target = frameTargets.first(where: { $0 !== lastCompletedFrame })!
+            engine.letterboxed = displayFit.letterboxes(canvas: Self.canvasSize(of: engine), viewport: CGSize(width: width, height: height))
+            engine.crop = displayCrop?.engineCrop
             try engine.encode(target: target, time: time, cursor: cursor, command: command)
             guard let blit = command.makeBlitCommandEncoder() else { throw SceneRuntimeError.graphics("scene frame presentation") }
             blit.copy(from: target, to: drawable.texture); blit.endEncoding()
@@ -528,5 +659,60 @@ private final class ScenePreparationFailure {
 
 /// Wallpaper surfaces never intercept desktop mouse events.
 private final class SceneSurfaceView: NSView {
+    var onResize: (() -> Void)?
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize)
+        if changed { onResize?() }
+    }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Kinetic 显示方式 › 自定义: the part of a Scene's canvas shown on the display. `zoom` 1 is the canvas just covering
+/// the display (at most `maximumZoom`); the centre is in canvas units (0…1, top-left origin). The shown region always
+/// lies inside the canvas, so the display is always filled.
+public struct SceneDisplayCrop: Equatable, Sendable {
+    public static let maximumZoom = KineticSceneCrop.maximumZoom
+    public var zoom: Double
+    public var centerX: Double
+    public var centerY: Double
+
+    public init(zoom: Double = 1, centerX: Double = 0.5, centerY: Double = 0.5) {
+        self.zoom = zoom; self.centerX = centerX; self.centerY = centerY
+    }
+
+    /// The shown part of a `canvas`-shaped scene on a `viewport`-shaped display, normalised (0…1, top-left origin).
+    public func region(canvas: CGSize, viewport: CGSize) -> CGRect {
+        engineCrop.region(source: canvas, target: viewport)
+    }
+
+    var engineCrop: KineticSceneCrop { KineticSceneCrop(zoom: zoom, centerX: centerX, centerY: centerY) }
+}
+
+/// How a Scene's authored canvas maps onto a display with a different aspect ratio (Kinetic setting).
+public enum SceneDisplayFit: String, Sendable, CaseIterable {
+    /// Fill like Wallpaper Engine, unless the shapes differ a lot — a portrait scene on a landscape display (or the
+    /// reverse), or more than a quarter of the canvas would be cropped — then show the whole canvas.
+    case automatic
+    /// Crop the canvas to fill the display (Wallpaper Engine's behaviour).
+    case fill
+    /// Show the whole canvas; bars fill the rest of the display.
+    case fit
+
+    /// Whether the whole canvas is shown with bars (contain) instead of being cropped to fill (cover).
+    public func letterboxes(canvas: CGSize, viewport: CGSize) -> Bool {
+        switch self {
+        case .fill: return false
+        case .fit: return true
+        case .automatic:
+            guard canvas.width > 0, canvas.height > 0, viewport.width > 0, viewport.height > 0,
+                  canvas.width.isFinite, canvas.height.isFinite, viewport.width.isFinite, viewport.height.isFinite else { return false }
+            let canvasAspect = canvas.width / canvas.height, viewAspect = viewport.width / viewport.height
+            let tolerance: CGFloat = 0.05
+            let orientationDiffers = (canvasAspect > 1 + tolerance && viewAspect < 1 - tolerance)
+                || (canvasAspect < 1 - tolerance && viewAspect > 1 + tolerance)
+            let cropped = 1 - min(canvasAspect, viewAspect) / max(canvasAspect, viewAspect)
+            return orientationDiffers || cropped > 0.25
+        }
+    }
 }

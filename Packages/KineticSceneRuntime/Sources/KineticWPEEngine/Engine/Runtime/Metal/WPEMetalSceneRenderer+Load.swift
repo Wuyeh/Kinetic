@@ -668,7 +668,10 @@ extension WPEMetalSceneRenderer {
         for object in document.particleObjects { nameByID[object.id] = object.name }
         var layers: [WPESceneScriptLayerInfo] = []
         layers.reserveCapacity(nameByID.count)
-        for object in document.imageObjects {
+        // Text's synthetic render image shares the text object's identity; scripts address the TEXT layer (its
+        // origin is the text anchor, its size the live text), so the text entry below stands for both.
+        let textIDs = Set(document.textObjects.map(\.id))
+        for object in document.imageObjects where !textIDs.contains(object.id) {
             layers.append(WPESceneScriptLayerInfo(
                 id: object.id,
                 name: object.name,
@@ -681,7 +684,9 @@ extension WPEMetalSceneRenderer {
                 parentName: object.parentObjectID.flatMap { nameByID[$0] },
                 alignment: object.alignment.rawValue,
                 parallaxDepth: object.parallaxDepth,
-                initialConfiguration: initialConfiguration(object.id)
+                initialConfiguration: initialConfiguration(object.id),
+                localOrigin: object.localOrigin,
+                localScale: object.localScale
             ))
         }
         for object in document.transformHostObjects {
@@ -695,7 +700,9 @@ extension WPEMetalSceneRenderer {
                 angles: object.angles,
                 index: document.objectPaintOrder[object.id] ?? layers.count,
                 parentName: object.parentObjectID.flatMap { nameByID[$0] },
-                initialConfiguration: initialConfiguration(object.id)
+                initialConfiguration: initialConfiguration(object.id),
+                localOrigin: object.localOrigin,
+                localScale: object.localScale
             ))
         }
         for object in document.textObjects {
@@ -709,7 +716,11 @@ extension WPEMetalSceneRenderer {
                 angles: object.angles,
                 index: document.objectPaintOrder[object.id] ?? layers.count,
                 parentName: object.parentObjectID.flatMap { nameByID[$0] },
-                initialConfiguration: initialConfiguration(object.id)
+                parallaxDepth: object.parallaxDepth,
+                initialConfiguration: initialConfiguration(object.id),
+                localOrigin: object.localOrigin,
+                localScale: object.localScale,
+                isText: true
             ))
         }
         for object in document.particleObjects {
@@ -728,6 +739,20 @@ extension WPEMetalSceneRenderer {
                 id: object.id, name: object.name, size: .zero, origin: .zero,
                 index: document.objectPaintOrder[object.id] ?? layers.count, parentName: nil,
                 initialConfiguration: initialConfiguration(object.id)
+            ))
+        }
+        // Kinetic: Wallpaper Engine's layer list holds every authored object. One that draws nothing here (an
+        // empty scriptless text, a visible-script host) keeps its slot, or `getLayerIndex` of every later layer
+        // comes out short and scripts that check their own index (2887099508) stop early.
+        let listedIDs = Set(layers.map(\.id))
+        for (id, index) in document.objectPaintOrder where !listedIDs.contains(id) {
+            var name = id
+            if authoredObjects.indices.contains(index), case let .string(authoredName)? = authoredObjects[index]["name"] {
+                name = authoredName
+            }
+            layers.append(WPESceneScriptLayerInfo(
+                id: id, name: name, size: .zero, origin: .zero, index: index, parentName: nil,
+                initialConfiguration: initialConfiguration(id)
             ))
         }
         // Text's synthetic render image and logical text object share one identity.

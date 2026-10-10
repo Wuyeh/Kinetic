@@ -49,10 +49,19 @@ struct WPELayerScriptPresentationMutation: Sendable, Equatable {
     var alignment: String?
     var parallaxDepth: SIMD2<Double>?
     var sortIndex: Int?
+    /// Text layers' `horizontalalign` / `verticalalign`, as a script assigned them.
+    var horizontalAlignment: String?
+    var verticalAlignment: String?
 
     mutating func merge(_ newer: Self) {
         if let alignment = newer.alignment {
             self.alignment = alignment
+        }
+        if let horizontalAlignment = newer.horizontalAlignment {
+            self.horizontalAlignment = horizontalAlignment
+        }
+        if let verticalAlignment = newer.verticalAlignment {
+            self.verticalAlignment = verticalAlignment
         }
         if let parallaxDepth = newer.parallaxDepth {
             self.parallaxDepth = parallaxDepth

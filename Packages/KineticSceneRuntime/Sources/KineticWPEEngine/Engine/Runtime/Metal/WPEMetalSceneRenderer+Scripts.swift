@@ -276,7 +276,8 @@ extension WPEMetalSceneRenderer {
 
     func applyTextScriptOutput(_ output: WPELayerScriptOutput, ownObjectID: String) {
         if output.own.visibleAssigned {
-            liveTextVisibility[ownObjectID] = output.own.visible
+            ownVisibilityByID[ownObjectID] = output.own.visible
+            liveTextVisibility[ownObjectID] = output.own.visible && ancestorChainVisible(ownObjectID)
         }
         if output.own.alphaAssigned {
             liveTextAlpha[ownObjectID] = output.own.alpha
@@ -827,7 +828,8 @@ extension WPEMetalSceneRenderer {
         let alignmentOffset = WPEMetalRenderExecutor.alignmentCenterOffset(
             alignment: geometry.alignment,
             width: Float(half.x * 2),
-            height: Float(half.y * 2)
+            height: Float(half.y * 2),
+            scale: geometry.scale
         )
         center.x += Double(alignmentOffset.x)
         center.y -= Double(alignmentOffset.y)
@@ -994,7 +996,8 @@ extension WPEMetalSceneRenderer {
     var staticCacheExcludedLayerIDs: Set<String> {
         var ids = installedScriptLayerIDs
         ids.formUnion(liveLayerPresentation.compactMap { id, mutation in
-            mutation.alignment != nil || mutation.parallaxDepth != nil ? id : nil
+            mutation.alignment != nil || mutation.parallaxDepth != nil
+                || mutation.horizontalAlignment != nil || mutation.verticalAlignment != nil ? id : nil
         })
         ids.formUnion(textScriptInstances.keys)
         ids.formUnion(textRenderPlans.lazy.filter(\.copiesSceneBackground).map { $0.object.id })
@@ -1059,6 +1062,9 @@ extension WPEMetalSceneRenderer {
         // Text objects draw from the text maps, which also win the merge over the layer maps.
         let isText = liveTextVisibility[objectID] != nil
         if state.visibleAssigned {
+            // Retain the script's own claim even while a parent is hidden; a
+            // subsequent author group patch can re-fold it without restarting scripts.
+            ownVisibilityByID[objectID] = state.visible
             let visible = state.visible && ancestorChainVisible(objectID)
             if isText {
                 liveTextVisibility[objectID] = visible
