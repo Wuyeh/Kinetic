@@ -8,7 +8,7 @@
 - Workshop 浏览、搜索、筛选与下载，下载完成后加入本地资料库。
 - 壁纸列表、定时切换、预设、书签、方案与配置备份。
 - 天气、桌面组件、音乐信息及兼容场景的音频响应。
-- 智能暂停、权限设置与 Sparkle 更新。
+- 智能暂停、权限设置与应用更新。
 
 场景兼容性随作者使用的特性与资源而异，尚不保证支持所有 Wallpaper Engine 项目。引擎资源和 Workshop 素材由用户提供，不随源码分发。Steam 下载使用 SteamCMD，在 Apple Silicon 上需要 Rosetta；浏览与下载需配置自己的 Steam 凭据。
 
@@ -48,7 +48,3 @@ Tools/UpdateRelease/build_release.sh .build/Release/1.0.0 \
 ```
 
 `kinetic-notary` 是用户自行配置的 `notarytool` 钥匙串配置名称，脚本不要求输入密码。更新私钥应在本机安全保存并离线备份，禁止提交到仓库。带更新源的包需要已有更新签名私钥；更新源输出位于 `feed/appcast.xml`。当前默认更新地址为空，不检查远程更新。
-
-## 第三方代码
-
-更新功能使用 [Sparkle 2.9.6](https://github.com/sparkle-project/Sparkle)。场景引擎由 [Paradox07127/macos-wallpaperengine](https://github.com/Paradox07127/macos-wallpaperengine) 的底层实现适配，详情见 [引擎说明](Packages/KineticSceneRuntime/NOTICE.md)。版权和许可原文保留在源码及 App 的“设置 › 关于 › 致谢与开源许可”中。

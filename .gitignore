@@ -71,18 +71,6 @@ xcuserdata/
 # User-supplied media stays local; generated fixtures remain tracked.
 /5115FE36-676D-450D-B436-C9A45D8286D1.mov
 
-# Historical plain-text exports; canonical documents are the .md / .rtf files.
-/work/AI_HANDOFF.txt
-/work/DEV_STATUS.txt
-/work/DECISIONS.txt
-/总开发文档.txt
-/总开发文档0.1.txt
-
-# Development plans and handoff records remain local.
-/work/
-/Kinetic_1.0_Master_Development_Spec_CN.txt
-/总开发文档0.1.rtf
-
 # Local tooling caches and release credentials / artifacts.
 __pycache__/
 *.pyc

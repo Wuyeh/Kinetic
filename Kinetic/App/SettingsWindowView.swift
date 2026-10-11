@@ -212,8 +212,6 @@ struct SettingsContentView: View {
                 Divider()
                 UpdateSettingsSection(updates: updates, settings: settings)
             }
-            Divider()
-            AcknowledgementsSection()
         }
     }
 

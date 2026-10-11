@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.library(name: "KineticSceneRuntime", targets: ["KineticSceneRuntime"])],
     targets: [
-        // Scene engine adapted from Paradox07127/macos-wallpaperengine (MIT, Loomscreen contributors).
+        // Third-party copyright and MIT terms are retained with the engine sources.
         // See NOTICE.md and Sources/KineticWPEEngine/UPSTREAM_LICENSE.txt.
         .target(name: "KineticWPEEngine", exclude: ["UPSTREAM_LICENSE.txt"],
                 resources: [.process("Engine/Runtime/Metal/WPEMetalBuiltins.metal")]),
